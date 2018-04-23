@@ -112,7 +112,15 @@
 #include "../plugins.h"
 #include "filedelete.h"
 
+#include <libinjector/libinjector.h>
+
 #define FILE_DISPOSITION_INFORMATION 13
+
+#undef UNUSED
+#define UNUSED __attribute__((unused))
+
+#undef PRINT_DEBUG
+#define PRINT_DEBUG printf
 
 enum offset
 {
@@ -411,6 +419,7 @@ static void grab_file_by_handle(filedelete* f, drakvuf_t drakvuf,
  *  BOOLEAN DeleteFile;
  * }
  */
+UNUSED
 static event_response_t setinformation(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
 {
     filedelete* f = (filedelete*)info->trap->data;
@@ -461,6 +470,7 @@ done:
     return 0;
 }
 
+UNUSED
 static event_response_t writefile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
 {
     filedelete* f = (filedelete*)info->trap->data;
@@ -489,6 +499,7 @@ done:
     return 0;
 }
 
+UNUSED
 static event_response_t close_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
 {
     filedelete* f = (filedelete*)info->trap->data;
@@ -521,6 +532,212 @@ done:
     return 0;
 }
 
+struct injector
+{
+    bool is32bit;
+
+    reg_t target_cr3;
+    uint32_t target_thread_id;
+    addr_t eprocess_base;
+
+    x86_registers_t saved_regs;
+
+    drakvuf_trap_t bp;
+};
+
+static event_response_t ntqueryobject_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
+{
+    struct injector* injector = (struct injector*)info->trap->data;
+    uint32_t thread_id = 0;
+
+    if (info->regs->cr3 != injector->target_cr3)
+        return 0;
+
+    if ( !drakvuf_get_current_thread_id(drakvuf, info->vcpu, &thread_id) ||
+         !injector->target_thread_id || thread_id != injector->target_thread_id )
+        return 0;
+
+#ifdef DRAKVUF_DEBUG
+    {
+        char* process_name = drakvuf_get_process_name(drakvuf, injector->eprocess_base);
+
+        PRINT_DEBUG("\t* [FILEDELETE] Process '%s', TID 0x%x.\n",
+                process_name, injector->target_thread_id);
+    }
+#endif
+
+    drakvuf_remove_trap(drakvuf, &injector->bp, NULL);
+
+    PRINT_DEBUG("[FILEDELETE] NtQueryObject output size is 0x%lx\n", info->regs->rax);
+
+    memcpy(info->regs, &injector->saved_regs, sizeof(x86_registers_t));
+
+    delete injector;
+
+    return VMI_EVENT_RESPONSE_SET_REGISTERS;
+}
+
+// TODO Handle multiple handlers in parallel
+static event_response_t closehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
+{
+    auto response = 0;
+    auto restore_regs = false;
+    auto injector = new struct injector;
+    const char* lib = "ntdll.dll";
+    const char* fun = "NtQueryObject";
+    addr_t exec_func = 0;
+
+    filedelete* f = (filedelete*)info->trap->data;
+    vmi_instance_t vmi = drakvuf_lock_and_get_vmi(drakvuf);
+
+    reg_t handle = 0;
+
+    if (f->pm == VMI_PM_IA32E)
+    {
+        handle = info->regs->rcx;
+    }
+    else
+    {
+        access_context_t ctx;
+        ctx.translate_mechanism = VMI_TM_PROCESS_DTB;
+        ctx.dtb = info->regs->cr3;
+        ctx.addr = info->regs->rsp + sizeof(uint32_t);
+        if ( VMI_FAILURE == vmi_read_32(vmi, &ctx, (uint32_t*) &handle) )
+            goto err;
+    }
+
+    injector->is32bit = f->pm == VMI_PM_IA32E ? false : true;
+    injector->target_cr3 = info->regs->cr3;
+
+    injector->eprocess_base = drakvuf_get_current_process(drakvuf, info->vcpu);
+    if ( 0 == injector->eprocess_base )
+    {
+        PRINT_DEBUG("[FILEDELETE] Failed to get process base on vCPU 0x%d\n",
+                    info->vcpu);
+        goto err;
+    }
+
+    if ( !drakvuf_get_current_thread_id(drakvuf, info->vcpu, &injector->target_thread_id) ||
+         !injector->target_thread_id )
+    {
+        PRINT_DEBUG("[FILEDELETE] Failed to get Thread ID\n");
+        goto err;
+    }
+
+    exec_func = drakvuf_exportsym_to_va(drakvuf, injector->eprocess_base, lib, fun);
+    if (!exec_func)
+    {
+        //PRINT_DEBUG("[FILEDELETE] Failed to get address of %s!%s\n", lib, fun);
+        goto err;
+    }
+
+#ifdef DRAKVUF_DEBUG
+    {
+        char* process_name = drakvuf_get_process_name(drakvuf, injector->eprocess_base);
+
+        PRINT_DEBUG("[FILEDELETE] Process '%s', TID 0x%x.\n",
+                process_name, injector->target_thread_id);
+    }
+#endif
+
+    memcpy(&injector->saved_regs, info->regs, sizeof(x86_registers_t));
+    restore_regs = true;
+
+    {
+        access_context_t ctx =
+        {
+            .translate_mechanism = VMI_TM_PROCESS_DTB,
+            .dtb = info->regs->cr3,
+            .addr = info->regs->rsp,
+        };
+
+        if (injector->is32bit)
+        {
+            PRINT_DEBUG("[FILEDELETE] 32bit VMs not supported yet\n");
+            goto err;
+        }
+
+        uint64_t nul64 = 0;
+
+        ctx.addr -= 0x8;
+        auto out_size_addr = ctx.addr;
+        if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &nul64))
+            goto err;
+
+        //p5
+        ctx.addr -= 0x8;
+        if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &out_size_addr))
+            goto err;
+
+        //p1
+        info->regs->rcx = handle;
+        //p2
+        info->regs->rdx = 1;
+        //p3
+        info->regs->r8 = 0;
+        //p4
+        info->regs->r9 = 0;
+
+        // allocate 0x20 "homing space"
+        ctx.addr -= 0x8;
+        if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &nul64))
+            goto err;
+
+        ctx.addr -= 0x8;
+        if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &nul64))
+            goto err;
+
+        ctx.addr -= 0x8;
+        if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &nul64))
+            goto err;
+
+        ctx.addr -= 0x8;
+        if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &nul64))
+            goto err;
+
+        // save the return address
+        ctx.addr -= 0x8;
+        if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &info->regs->rip))
+            goto err;
+
+        // Grow the stack
+        info->regs->rsp = ctx.addr;
+    }
+
+    injector->bp.type = BREAKPOINT;
+    injector->bp.name = "NtQueryObject ret";
+    injector->bp.cb = ntqueryobject_cb;
+    injector->bp.data = injector;
+    injector->bp.breakpoint.lookup_type = LOOKUP_DTB;
+    injector->bp.breakpoint.dtb = info->regs->cr3;
+    injector->bp.breakpoint.addr_type = ADDR_VA;
+    injector->bp.breakpoint.addr = info->regs->rip;
+
+    if ( !drakvuf_add_trap(drakvuf, &injector->bp) )
+    {
+        fprintf(stderr, "Failed to trap return location of injected function call @ 0x%lx!\n",
+                injector->bp.breakpoint.addr);
+        goto err;
+    }
+
+    info->regs->rip = exec_func;
+
+    response = VMI_EVENT_RESPONSE_SET_REGISTERS;
+
+    goto done;
+
+err:
+    if (restore_regs)
+        memcpy(info->regs, &injector->saved_regs, sizeof(x86_registers_t));
+
+    if (injector)
+        delete injector;
+
+done:
+    drakvuf_release_vmi(drakvuf);
+    return response;
+}
+
 static void register_trap( drakvuf_t drakvuf, const char* rekall_profile, const char* syscall_name,
                            drakvuf_trap_t* trap,
                            event_response_t(*hook_cb)( drakvuf_t drakvuf, drakvuf_trap_info_t* info ) )
@@ -545,16 +762,20 @@ filedelete::filedelete(drakvuf_t drakvuf, const void* config, output_format_t ou
     this->dump_folder = c->dump_folder;
     this->format = output;
 
-    assert(sizeof(traps)/sizeof(traps[0]) > 2);
+    assert(sizeof(traps)/sizeof(traps[0]) > 0);
+    /*
     register_trap(drakvuf, c->rekall_profile, "NtSetInformationFile", &traps[0], setinformation);
     if (c->dump_modified_files)
     {
         register_trap(drakvuf, c->rekall_profile, "NtWriteFile",      &traps[1], writefile_cb);
         register_trap(drakvuf, c->rekall_profile, "NtClose",          &traps[2], close_cb);
     }
+    */
     /* TODO
     register_trap(drakvuf, c->rekall_profile, "NtDeleteFile",            &traps[3], deletefile_cb);
     register_trap(drakvuf, c->rekall_profile, "ZwDeleteFile",            &traps[4], deletefile_cb); */
+
+    register_trap(drakvuf, c->rekall_profile, "NtClose", &traps[0], closehandle_cb);
 
     this->offsets = (size_t*)malloc(sizeof(size_t)*__OFFSET_MAX);
 
