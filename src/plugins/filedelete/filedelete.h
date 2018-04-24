@@ -108,6 +108,7 @@
 #include "plugins/private.h"
 #include "plugins/plugins.h"
 
+#include <map>
 #include <set>
 #include <utility>
 #include <cstdint>
@@ -136,6 +137,9 @@ public:
 
     std::set<std::pair<vmi_pid_t, uint64_t>> changed_file_handles;
     int sequence_number;
+
+    // TODO std::unordered_set may suit better for this because of search spead
+    std::map<std::pair<addr_t, uint32_t>, bool> closing_handles;
 
     filedelete(drakvuf_t drakvuf, const void* config, output_format_t output);
     ~filedelete();

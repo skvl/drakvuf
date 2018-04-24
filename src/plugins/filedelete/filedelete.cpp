@@ -534,6 +534,7 @@ done:
 
 struct injector
 {
+    filedelete* f;
     bool is32bit;
 
     reg_t target_cr3;
@@ -541,6 +542,7 @@ struct injector
     addr_t eprocess_base;
 
     x86_registers_t saved_regs;
+    addr_t object_information_size;
 
     drakvuf_trap_t bp;
 };
@@ -548,41 +550,64 @@ struct injector
 static event_response_t ntqueryobject_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
 {
     struct injector* injector = (struct injector*)info->trap->data;
+
+    auto response = 0;
     uint32_t thread_id = 0;
+    uint64_t object_information_size = 0;
+    std::pair<addr_t, uint32_t> thread;
+
+    access_context_t ctx =
+    {
+        .translate_mechanism = VMI_TM_PROCESS_DTB,
+        .dtb = info->regs->cr3,
+        .addr = injector->object_information_size,
+    };
+
+    vmi_instance_t vmi = drakvuf_lock_and_get_vmi(drakvuf);
 
     if (info->regs->cr3 != injector->target_cr3)
-        return 0;
+        goto done;
 
     if ( !drakvuf_get_current_thread_id(drakvuf, info->vcpu, &thread_id) ||
          !injector->target_thread_id || thread_id != injector->target_thread_id )
-        return 0;
+        goto done;
 
-#ifdef DRAKVUF_DEBUG
+    if (VMI_FAILURE == vmi_read_64(vmi, &ctx, &object_information_size))
     {
-        char* process_name = drakvuf_get_process_name(drakvuf, injector->eprocess_base);
-
-        PRINT_DEBUG("\t* [FILEDELETE] Process '%s', TID 0x%x.\n",
-                process_name, injector->target_thread_id);
+        PRINT_DEBUG("[FILEDELETE] Failed to read ObjectInformation size.\n");
+        goto done;
     }
-#endif
 
-    drakvuf_remove_trap(drakvuf, &injector->bp, NULL);
+    if (1)
+    {
+        vmi_pid_t pid = 0;
 
-    PRINT_DEBUG("[FILEDELETE] NtQueryObject output size is 0x%lx\n", info->regs->rax);
+        drakvuf_get_process_pid(drakvuf, injector->eprocess_base, &pid);
+
+        PRINT_DEBUG("[FILEDELETE] [NtQueryObject] Output 0x%lx (PID %d, TID %d)\n",
+                object_information_size, pid, thread_id);
+    }
+
+    thread = std::make_pair(info->regs->cr3, thread_id);
+    injector->f->closing_handles[thread] = true;
 
     memcpy(info->regs, &injector->saved_regs, sizeof(x86_registers_t));
+    response = VMI_EVENT_RESPONSE_SET_REGISTERS;
 
+    drakvuf_remove_trap(drakvuf, &injector->bp, NULL);
     delete injector;
 
-    return VMI_EVENT_RESPONSE_SET_REGISTERS;
+done:
+    drakvuf_release_vmi(drakvuf);
+
+    return response;
 }
 
-// TODO Handle multiple handlers in parallel
 static event_response_t closehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
 {
     auto response = 0;
     auto restore_regs = false;
-    auto injector = new struct injector;
+    struct injector* injector = nullptr;
     const char* lib = "ntdll.dll";
     const char* fun = "NtQueryObject";
     addr_t exec_func = 0;
@@ -606,6 +631,8 @@ static event_response_t closehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* i
             goto err;
     }
 
+    injector = new struct injector;
+    injector->f = f;
     injector->is32bit = f->pm == VMI_PM_IA32E ? false : true;
     injector->target_cr3 = info->regs->cr3;
 
@@ -631,14 +658,28 @@ static event_response_t closehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* i
         goto err;
     }
 
-#ifdef DRAKVUF_DEBUG
     {
-        char* process_name = drakvuf_get_process_name(drakvuf, injector->eprocess_base);
+        auto thread = std::make_pair(info->regs->cr3, injector->target_thread_id);
+        auto thread_it = f->closing_handles.find(thread);
+        auto map_end = f->closing_handles.cend();
+        if (map_end != thread_it)
+        {
+            bool handled = thread_it->second;
+            if (handled)
+            {
+                f->closing_handles.erase(thread);
+                PRINT_DEBUG("[FILEDELETE] [NtClose] Finish (CR3 0x%lx, TID %d)\n",
+                        info->regs->cr3, injector->target_thread_id);
+            }
+            else
+                PRINT_DEBUG("[FILEDELETE] [NtClose] In progress (CR3  0x%lx, TID %d)\n",
+                        info->regs->cr3, injector->target_thread_id);
 
-        PRINT_DEBUG("[FILEDELETE] Process '%s', TID 0x%x.\n",
-                process_name, injector->target_thread_id);
+            goto err;
+        }
+        else
+            f->closing_handles[thread] = false;
     }
-#endif
 
     memcpy(&injector->saved_regs, info->regs, sizeof(x86_registers_t));
     restore_regs = true;
@@ -661,6 +702,7 @@ static event_response_t closehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* i
 
         ctx.addr -= 0x8;
         auto out_size_addr = ctx.addr;
+        injector->object_information_size = out_size_addr;
         if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &nul64))
             goto err;
 
@@ -672,7 +714,7 @@ static event_response_t closehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* i
         //p1
         info->regs->rcx = handle;
         //p2
-        info->regs->rdx = 1;
+        info->regs->rdx = 2; // OBJECT_INFORMATION_CLASS ObjectTypeInformation
         //p3
         info->regs->r8 = 0;
         //p4
@@ -738,6 +780,53 @@ done:
     return response;
 }
 
+static event_response_t cr3_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
+{
+    auto response = 0;
+    addr_t exec_func = 0;
+    const char* lib = "ntdll.dll";
+    const char* fun = "NtClose";
+    filedelete* f = (filedelete*)info->trap->data;
+
+    auto eprocess_base = drakvuf_get_current_process(drakvuf, info->vcpu);
+    if ( 0 == eprocess_base )
+    {
+        PRINT_DEBUG("[FILEDELETE] Failed to get process base on vCPU 0x%d\n",
+                    info->vcpu);
+        goto err;
+    }
+
+    exec_func = drakvuf_exportsym_to_va(drakvuf, eprocess_base, lib, fun);
+    if (!exec_func)
+    {
+        //PRINT_DEBUG("[FILEDELETE] Failed to get address of %s!%s\n", lib, fun);
+        goto err;
+    }
+
+    // Unsubscribe from the CR3 trap
+    drakvuf_remove_trap(drakvuf, info->trap, (drakvuf_trap_free_t)free);
+
+    f->traps[0].type = BREAKPOINT;
+    f->traps[0].name = "NtClose";
+    f->traps[0].cb = closehandle_cb;
+    f->traps[0].data = info->trap->data;
+    f->traps[0].breakpoint.lookup_type = LOOKUP_DTB;
+    f->traps[0].breakpoint.dtb = info->regs->cr3;
+    f->traps[0].breakpoint.addr_type = ADDR_VA;
+    f->traps[0].breakpoint.addr = exec_func;
+
+    if ( !drakvuf_add_trap(drakvuf, &f->traps[0]) )
+    {
+        fprintf(stderr, "Failed to trap return location of injected function call @ 0x%lx!\n",
+                f->traps[0].breakpoint.addr);
+        return 0;
+    }
+
+err:
+    return response;
+}
+
+UNUSED
 static void register_trap( drakvuf_t drakvuf, const char* rekall_profile, const char* syscall_name,
                            drakvuf_trap_t* trap,
                            event_response_t(*hook_cb)( drakvuf_t drakvuf, drakvuf_trap_info_t* info ) )
@@ -762,8 +851,21 @@ filedelete::filedelete(drakvuf_t drakvuf, const void* config, output_format_t ou
     this->dump_folder = c->dump_folder;
     this->format = output;
 
+    // Will be freed while "drakvuf_remove_trap()"
+    drakvuf_trap_t* bp = (drakvuf_trap_t*)g_malloc0(sizeof(drakvuf_trap_t));
+
+    bp->type = REGISTER;
+    bp->reg = CR3;
+    bp->cb = cr3_cb;
+    bp->data = this;
+    if ( !drakvuf_add_trap(drakvuf, bp) )
+        throw -1;
+
+    // Slot 0 is used for "ntdll!NtClose" trap
     assert(sizeof(traps)/sizeof(traps[0]) > 0);
+
     /*
+    assert(sizeof(traps)/sizeof(traps[0]) > 3);
     register_trap(drakvuf, c->rekall_profile, "NtSetInformationFile", &traps[0], setinformation);
     if (c->dump_modified_files)
     {
@@ -774,8 +876,6 @@ filedelete::filedelete(drakvuf_t drakvuf, const void* config, output_format_t ou
     /* TODO
     register_trap(drakvuf, c->rekall_profile, "NtDeleteFile",            &traps[3], deletefile_cb);
     register_trap(drakvuf, c->rekall_profile, "ZwDeleteFile",            &traps[4], deletefile_cb); */
-
-    register_trap(drakvuf, c->rekall_profile, "NtClose", &traps[0], closehandle_cb);
 
     this->offsets = (size_t*)malloc(sizeof(size_t)*__OFFSET_MAX);
 
