@@ -537,12 +537,24 @@ struct injector
     filedelete* f;
     bool is32bit;
 
+    reg_t handle;
+
     reg_t target_cr3;
     uint32_t target_thread_id;
     addr_t eprocess_base;
 
     x86_registers_t saved_regs;
-    addr_t object_information_size;
+
+    union
+    {
+        struct
+        {
+            addr_t exec_func;
+            bool get_type_info;
+            addr_t out;
+            size_t size;
+        } ntqueryobject_info;
+    };
 
     drakvuf_trap_t bp;
 };
@@ -556,13 +568,6 @@ static event_response_t ntqueryobject_cb(drakvuf_t drakvuf, drakvuf_trap_info_t*
     uint64_t object_information_size = 0;
     std::pair<addr_t, uint32_t> thread;
 
-    access_context_t ctx =
-    {
-        .translate_mechanism = VMI_TM_PROCESS_DTB,
-        .dtb = info->regs->cr3,
-        .addr = injector->object_information_size,
-    };
-
     vmi_instance_t vmi = drakvuf_lock_and_get_vmi(drakvuf);
 
     if (info->regs->cr3 != injector->target_cr3)
@@ -572,22 +577,115 @@ static event_response_t ntqueryobject_cb(drakvuf_t drakvuf, drakvuf_trap_info_t*
          !injector->target_thread_id || thread_id != injector->target_thread_id )
         goto done;
 
-    if (VMI_FAILURE == vmi_read_64(vmi, &ctx, &object_information_size))
+    if (!injector->ntqueryobject_info.get_type_info)
     {
-        PRINT_DEBUG("[FILEDELETE] Failed to read ObjectInformation size.\n");
+        access_context_t ctx =
+        {
+            .translate_mechanism = VMI_TM_PROCESS_DTB,
+            .dtb = info->regs->cr3,
+            .addr = injector->ntqueryobject_info.out,
+        };
+
+        if (VMI_FAILURE == vmi_read_64(vmi, &ctx, &object_information_size))
+        {
+            PRINT_DEBUG("[FILEDELETE] [NtQueryObject] Failed to read ObjectInformation size.\n");
+            goto err;
+        }
+
+        injector->ntqueryobject_info.size = object_information_size;
+        injector->ntqueryobject_info.get_type_info = true;
+
+        {
+            // Remove stack arguments and home space from previous injection
+            info->regs->rsp = injector->saved_regs.rsp;
+
+            access_context_t ctx =
+            {
+                .translate_mechanism = VMI_TM_PROCESS_DTB,
+                .dtb = info->regs->cr3,
+                .addr = info->regs->rsp,
+            };
+
+            if (injector->is32bit)
+            {
+                PRINT_DEBUG("[FILEDELETE] 32bit VMs not supported yet\n");
+                goto err;
+            }
+
+            uint64_t nul64 = 0;
+
+            ctx.addr -= object_information_size;
+            auto out_addr = ctx.addr;
+            injector->ntqueryobject_info.out = out_addr;
+            if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &nul64))
+                goto err;
+
+            //p5
+            ctx.addr -= 0x8;
+            if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &nul64))
+                goto err;
+
+            //p1
+            info->regs->rcx = injector->handle;
+            //p2
+            info->regs->rdx = 2; // OBJECT_INFORMATION_CLASS ObjectTypeInformation
+            //p3
+            info->regs->r8 = out_addr;
+            //p4
+            info->regs->r9 = object_information_size;
+
+            // allocate 0x20 "homing space"
+            ctx.addr -= 0x8;
+            if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &nul64))
+                goto err;
+
+            ctx.addr -= 0x8;
+            if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &nul64))
+                goto err;
+
+            ctx.addr -= 0x8;
+            if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &nul64))
+                goto err;
+
+            ctx.addr -= 0x8;
+            if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &nul64))
+                goto err;
+
+            // save the return address
+            ctx.addr -= 0x8;
+            if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &info->regs->rip))
+                goto err;
+
+            // Grow the stack
+            info->regs->rsp = ctx.addr;
+        }
+
+        info->regs->rip = injector->ntqueryobject_info.exec_func;
+
+        response = VMI_EVENT_RESPONSE_SET_REGISTERS;
+
         goto done;
     }
-
-    if (1)
+    else
     {
-        vmi_pid_t pid = 0;
+        unicode_string_t* type_name = drakvuf_read_unicode(drakvuf, info, injector->ntqueryobject_info.out);
 
-        drakvuf_get_process_pid(drakvuf, injector->eprocess_base, &pid);
+        std::string type_file = "File";
+        if ( 0 == type_file.compare(std::string((const char*)type_name->contents)) )
+        {
+            PRINT_DEBUG("[FILEDELETE] [NtQueryObject] Close '%s'.\n", type_name->contents);
+        }
 
-        PRINT_DEBUG("[FILEDELETE] [NtQueryObject] Output 0x%lx (PID %d, TID %d)\n",
-                object_information_size, pid, thread_id);
+        // TODO `goto done;` after adding redirection to other functions
+        goto handled;
     }
 
+
+err:
+    PRINT_DEBUG("[FILEDELETE] [NtQueryObject] Error. Stop processing (CR3 0x%lx, TID %d).\n",
+            info->regs->cr3, thread_id);
+
+handled:
     thread = std::make_pair(info->regs->cr3, thread_id);
     injector->f->closing_handles[thread] = true;
 
@@ -603,6 +701,13 @@ done:
     return response;
 }
 
+/*
+ * Intercept all handles close and filter file handles.
+ *
+ * The main difficulty is that this handler intercepts not only CloseHandle()
+ * calls but returns from injected functions. To distinguish such situations
+ * we use the regestry of processes/threads being processed.
+ */
 static event_response_t closehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
 {
     auto response = 0;
@@ -633,8 +738,10 @@ static event_response_t closehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* i
 
     injector = new struct injector;
     injector->f = f;
+    injector->handle = handle;
     injector->is32bit = f->pm == VMI_PM_IA32E ? false : true;
     injector->target_cr3 = info->regs->cr3;
+    injector->ntqueryobject_info.get_type_info = false;
 
     injector->eprocess_base = drakvuf_get_current_process(drakvuf, info->vcpu);
     if ( 0 == injector->eprocess_base )
@@ -657,7 +764,12 @@ static event_response_t closehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* i
         //PRINT_DEBUG("[FILEDELETE] Failed to get address of %s!%s\n", lib, fun);
         goto err;
     }
+    injector->ntqueryobject_info.exec_func = exec_func;
 
+    /*
+     * Check if process/thread is being processed. If so skip it. Add it into
+     * regestry otherwise.
+     */
     {
         auto thread = std::make_pair(info->regs->cr3, injector->target_thread_id);
         auto thread_it = f->closing_handles.find(thread);
@@ -666,14 +778,7 @@ static event_response_t closehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* i
         {
             bool handled = thread_it->second;
             if (handled)
-            {
                 f->closing_handles.erase(thread);
-                PRINT_DEBUG("[FILEDELETE] [NtClose] Finish (CR3 0x%lx, TID %d)\n",
-                        info->regs->cr3, injector->target_thread_id);
-            }
-            else
-                PRINT_DEBUG("[FILEDELETE] [NtClose] In progress (CR3  0x%lx, TID %d)\n",
-                        info->regs->cr3, injector->target_thread_id);
 
             goto err;
         }
@@ -702,7 +807,7 @@ static event_response_t closehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* i
 
         ctx.addr -= 0x8;
         auto out_size_addr = ctx.addr;
-        injector->object_information_size = out_size_addr;
+        injector->ntqueryobject_info.out = out_size_addr;
         if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &nul64))
             goto err;
 
