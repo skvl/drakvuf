@@ -614,6 +614,10 @@ static event_response_t ntqueryobject_cb(drakvuf_t drakvuf, drakvuf_trap_info_t*
 
             uint64_t nul64 = 0;
 
+            // The string's length is undefined and could misalign stack which must be
+            // aligned on 16B boundary (see Microsoft x64 ABI).
+            ctx.addr &= ~0x1f;
+
             ctx.addr -= object_information_size;
             auto out_addr = ctx.addr;
             injector->ntqueryobject_info.out = out_addr;
