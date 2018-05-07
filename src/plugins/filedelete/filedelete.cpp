@@ -532,6 +532,24 @@ done:
     return 0;
 }
 
+// TODO Check structure layout (packed?)
+// The structure is described on MSDN
+struct by_handle_file_information
+{
+    uint32_t dwFileAttributes;
+    uint64_t ftCreationTime;
+    uint64_t ftLastAccessTime;
+    uint64_t ftLastWriteTime;
+    uint32_t dwVolumeSerialNumber;
+    uint32_t nFileSizeHigh;
+    uint32_t nFileSizeLow;
+    uint32_t nNumberOfLinks;
+    uint32_t nFileIndexHigh;
+    uint32_t nFileIndexLow;
+};
+
+#define FILE_ATTRIBUTE_DEVICE 0x40ULL
+
 struct injector
 {
     filedelete* f;
@@ -554,10 +572,82 @@ struct injector
             addr_t out;
             size_t size;
         } ntqueryobject_info;
+
+        struct
+        {
+            addr_t out;
+        } getfileinformationbyhandle_info;
     };
 
     drakvuf_trap_t bp;
 };
+
+static event_response_t getfileinformationbyhandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
+{
+    struct injector* injector = (struct injector*)info->trap->data;
+
+    auto response = 0;
+    uint32_t thread_id = 0;
+    std::pair<addr_t, uint32_t> thread;
+
+    UNUSED vmi_instance_t vmi = drakvuf_lock_and_get_vmi(drakvuf);
+
+    if (info->regs->cr3 != injector->target_cr3)
+        goto done;
+
+    if ( !drakvuf_get_current_thread_id(drakvuf, info->vcpu, &thread_id) ||
+         !injector->target_thread_id || thread_id != injector->target_thread_id )
+        goto done;
+
+    {
+        struct by_handle_file_information file_info = { 0 };
+
+        access_context_t ctx =
+        {
+            .translate_mechanism = VMI_TM_PROCESS_DTB,
+            .dtb = info->regs->cr3,
+            .addr = injector->getfileinformationbyhandle_info.out,
+        };
+
+        size_t bytes_read = 0;
+        if (VMI_FAILURE == vmi_read(vmi, &ctx, sizeof(struct by_handle_file_information), &file_info, &bytes_read) ||
+            bytes_read != sizeof(struct by_handle_file_information))
+        {
+            PRINT_DEBUG("[FILEDELETE] [GetFileInformationByHandle] Failed to read output structure.\n");
+            goto err;
+        }
+
+        if ( !(FILE_ATTRIBUTE_DEVICE & file_info.dwFileAttributes) )
+        {
+            PRINT_DEBUG("[FILEDELETE] [GetFileInformationByHandle] File attributes is 0x%x, size is 0x%lx.\n",
+                    file_info.dwFileAttributes, ((uint64_t)file_info.nFileSizeHigh) | file_info.nFileSizeLow);
+        }
+    }
+
+    goto handled;
+
+    // TODO Remove
+    goto err;
+
+err:
+    PRINT_DEBUG("[FILEDELETE] [GetFinalPathNameByHandle] Error. Stop processing (CR3 0x%lx, TID %d).\n",
+            info->regs->cr3, thread_id);
+
+handled:
+    thread = std::make_pair(info->regs->cr3, thread_id);
+    injector->f->closing_handles[thread] = true;
+
+    memcpy(info->regs, &injector->saved_regs, sizeof(x86_registers_t));
+    response = VMI_EVENT_RESPONSE_SET_REGISTERS;
+
+    drakvuf_remove_trap(drakvuf, &injector->bp, NULL);
+    delete injector;
+
+done:
+    drakvuf_release_vmi(drakvuf);
+
+    return response;
+}
 
 static event_response_t ntqueryobject_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
 {
@@ -673,15 +763,77 @@ static event_response_t ntqueryobject_cb(drakvuf_t drakvuf, drakvuf_trap_info_t*
     else
     {
         unicode_string_t* type_name = drakvuf_read_unicode(drakvuf, info, injector->ntqueryobject_info.out);
+        if (!type_name->contents)
+            goto err;
 
         std::string type_file = "File";
-        if ( 0 == type_file.compare(std::string((const char*)type_name->contents)) )
+        if ( 0 != type_file.compare(std::string((const char*)type_name->contents)) )
+            goto handled;
+
         {
-            PRINT_DEBUG("[FILEDELETE] [NtQueryObject] Close '%s'.\n", type_name->contents);
+            const char* lib = "kernel32.dll";
+            const char* fun = "GetFileInformationByHandle";
+
+            auto exec_func = drakvuf_exportsym_to_va(drakvuf, injector->eprocess_base, lib, fun);
+            if (!exec_func)
+            {
+                PRINT_DEBUG("[FILEDELETE] [NtQueryObject] Failed to get VA of '%s!%s'.\n", lib, fun);
+                goto err;
+            }
+
+            {
+                // Remove stack arguments and home space from previous injection
+                info->regs->rsp = injector->saved_regs.rsp;
+
+                access_context_t ctx =
+                {
+                    .translate_mechanism = VMI_TM_PROCESS_DTB,
+                    .dtb = info->regs->cr3,
+                    .addr = info->regs->rsp,
+                };
+
+                if (injector->is32bit)
+                {
+                    PRINT_DEBUG("[FILEDELETE] 32bit VMs not supported yet\n");
+                    goto err;
+                }
+
+                // The place for output data
+                uint8_t null_buf[sizeof(struct by_handle_file_information)] = { 0 };
+                ctx.addr -= sizeof(struct by_handle_file_information);
+                injector->getfileinformationbyhandle_info.out = ctx.addr;
+                if (VMI_FAILURE == vmi_write(vmi, &ctx, sizeof(struct by_handle_file_information), null_buf, NULL))
+                    goto err;
+
+                //p1
+                info->regs->rcx = injector->handle;
+                //p2
+                info->regs->rdx = injector->getfileinformationbyhandle_info.out;
+
+                // allocate 0x20 "homing space"
+                uint64_t home_space[4] = { 0 };
+                ctx.addr -= 0x20;
+                if (VMI_FAILURE == vmi_write(vmi, &ctx, 0x20, home_space, NULL))
+                    goto err;
+
+                // save the return address
+                ctx.addr -= 0x8;
+                if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &info->regs->rip))
+                    goto err;
+
+                // Grow the stack
+                info->regs->rsp = ctx.addr;
+            }
+
+            info->regs->rip = exec_func;
+
+            injector->bp.name = "GetFileInformationByHandle ret";
+            injector->bp.cb = getfileinformationbyhandle_cb;
+
+            response = VMI_EVENT_RESPONSE_SET_REGISTERS;
         }
 
-        // TODO `goto done;` after adding redirection to other functions
-        goto handled;
+        goto done;
     }
 
 
