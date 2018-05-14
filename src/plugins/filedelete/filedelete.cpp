@@ -470,7 +470,6 @@ done:
     return 0;
 }
 
-UNUSED
 static event_response_t writefile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
 {
     filedelete* f = (filedelete*)info->trap->data;
@@ -633,6 +632,7 @@ static event_response_t duplicatehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_
     auto response = 0;
     uint32_t thread_id = 0;
     std::pair<addr_t, uint32_t> thread;
+    filedelete* f = injector->f;
 
     vmi_instance_t vmi = drakvuf_lock_and_get_vmi(drakvuf);
 
@@ -659,6 +659,30 @@ static event_response_t duplicatehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_
         }
 
         PRINT_DEBUG("[FILEDELETE] [DuplicateHandle] Duplicate handle is %lu.\n", injector->file.handle);
+
+        // TODO Move into read file
+        {
+            // TODO Idx should be calculated per file
+            static uint64_t idx = 0;
+            char* file = NULL;
+            if ( asprintf(&file, "%s/file.%06lu.metadata", f->dump_folder, idx++) < 0 )
+                goto err;
+
+            FILE* fp = fopen(file, "w");
+            if (!fp)
+            {
+                free(file);
+                goto err;
+            }
+
+            fprintf(fp, "FileName: \"%s\"\n", injector->file.name->contents);
+            fprintf(fp, "PID: %" PRIu64 "\n", static_cast<uint64_t>(info->proc_data.pid));
+            fprintf(fp, "PPID: %" PRIu64 "\n", static_cast<uint64_t>(info->proc_data.ppid));
+            fprintf(fp, "ProcessName: \"%s\"\n", info->proc_data.name);
+
+            fclose(fp);
+            free(file);
+        }
 
         {
             // Remove stack arguments and home space from previous injection
@@ -1202,7 +1226,10 @@ static event_response_t closehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* i
         {
             bool handled = thread_it->second;
             if (handled)
+            {
                 f->closing_handles.erase(thread);
+                f->changed_file_handles.erase(std::make_pair(info->proc_data.pid, handle));
+            }
 
             goto err;
         }
@@ -1210,6 +1237,18 @@ static event_response_t closehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* i
             f->closing_handles[thread] = false;
     }
 
+    /*
+     * Check if closing handle have been changed with NtWriteFile
+     */
+    if (f->changed_file_handles.find(std::make_pair(info->proc_data.pid, handle)) == f->changed_file_handles.end())
+        goto err;
+
+    /*
+     * Real function body.
+     *
+     * Now we are sure this is new call to NtClose (not result of function injection) and
+     * the Handle have been modified in NtWriteFile. So we should save it on the host.
+     */
     memcpy(&injector->saved_regs, info->regs, sizeof(x86_registers_t));
     restore_regs = true;
 
@@ -1402,20 +1441,8 @@ filedelete::filedelete(drakvuf_t drakvuf, const void* config, output_format_t ou
         throw -1;
 
     // Slot 0 is used for "ntdll!NtClose" trap
-    assert(sizeof(traps)/sizeof(traps[0]) > 0);
-
-    /*
-    assert(sizeof(traps)/sizeof(traps[0]) > 3);
-    register_trap(drakvuf, c->rekall_profile, "NtSetInformationFile", &traps[0], setinformation);
-    if (c->dump_modified_files)
-    {
-        register_trap(drakvuf, c->rekall_profile, "NtWriteFile",      &traps[1], writefile_cb);
-        register_trap(drakvuf, c->rekall_profile, "NtClose",          &traps[2], close_cb);
-    }
-    */
-    /* TODO
-    register_trap(drakvuf, c->rekall_profile, "NtDeleteFile",            &traps[3], deletefile_cb);
-    register_trap(drakvuf, c->rekall_profile, "ZwDeleteFile",            &traps[4], deletefile_cb); */
+    assert(sizeof(traps)/sizeof(traps[0]) > 1);
+    register_trap(drakvuf, c->rekall_profile, "NtWriteFile", &traps[1], writefile_cb);
 
     this->offsets = (size_t*)malloc(sizeof(size_t)*__OFFSET_MAX);
 
