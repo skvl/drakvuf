@@ -106,6 +106,7 @@
 #include <config.h>
 #include <inttypes.h>
 #include <libvmi/x86.h>
+#include <algorithm>
 #include <cassert>
 #include <set>
 
@@ -554,6 +555,11 @@ struct injector
             addr_t out;
         } getfileinformationbyhandle_info, duplicatehandle_info;
 
+        struct
+        {
+            size_t size;
+            addr_t out;
+        } ntreadfile_info;
     };
 
     drakvuf_trap_t* bp;
@@ -594,7 +600,7 @@ done:
     return response;
 }
 
-static event_response_t duplicatehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
+static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
 {
     struct injector* injector = (struct injector*)info->trap->data;
 
@@ -602,6 +608,136 @@ static event_response_t duplicatehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_
     uint32_t thread_id = 0;
     std::pair<addr_t, uint32_t> thread;
     filedelete* f = injector->f;
+
+    vmi_instance_t vmi = drakvuf_lock_and_get_vmi(drakvuf);
+
+    if (info->regs->cr3 != injector->target_cr3)
+        goto done;
+
+    if ( !drakvuf_get_current_thread_id(drakvuf, info->vcpu, &thread_id) ||
+         !injector->target_thread_id || thread_id != injector->target_thread_id )
+        goto done;
+
+    {
+        // TODO Idx should be calculated per file
+        static uint64_t idx = 0;
+        char* file = NULL;
+        if ( asprintf(&file, "%s/file.%06lu.metadata", f->dump_folder, idx++) < 0 )
+            goto err;
+
+        FILE* fp = fopen(file, "w");
+        if (!fp)
+        {
+            free(file);
+            goto err;
+        }
+
+        fprintf(fp, "FileName: \"%s\"\n", injector->f->files[info->proc_data.pid][injector->handle].c_str());
+        fprintf(fp, "PID: %" PRIu64 "\n", static_cast<uint64_t>(info->proc_data.pid));
+        fprintf(fp, "PPID: %" PRIu64 "\n", static_cast<uint64_t>(info->proc_data.ppid));
+        fprintf(fp, "ProcessName: \"%s\"\n", info->proc_data.name);
+
+        fclose(fp);
+        free(file);
+
+        access_context_t ctx =
+        {
+            .translate_mechanism = VMI_TM_PROCESS_DTB,
+            .dtb = info->regs->cr3,
+            .addr = injector->ntreadfile_info.out,
+        };
+
+        void* buffer = g_malloc0(injector->ntreadfile_info.size);
+        if ((VMI_FAILURE == vmi_read(vmi, &ctx, injector->ntreadfile_info.size, buffer, NULL)))
+                goto err;
+
+        if ( asprintf(&file, "%s/file.%06lu", f->dump_folder, idx) < 0 )
+            goto err;
+
+        fp = fopen(file, "w");
+        if (!fp)
+        {
+            free(file);
+            goto err;
+        }
+
+        fwrite(buffer, 1, injector->ntreadfile_info.size, fp);
+        fclose(fp);
+        free(file);
+    }
+
+    {
+        // Remove stack arguments and home space from previous injection
+        info->regs->rsp = injector->saved_regs.rsp;
+
+        access_context_t ctx =
+        {
+        .translate_mechanism = VMI_TM_PROCESS_DTB,
+        .dtb = info->regs->cr3,
+        .addr = info->regs->rsp,
+        };
+
+        if (injector->is32bit)
+        {
+        PRINT_DEBUG("[FILEDELETE] 32bit VMs not supported yet\n");
+        goto err;
+        }
+
+        //p1
+        info->regs->rcx = injector->file.handle;
+
+        // allocate 0x20 "homing space"
+        uint64_t home_space[4] = { 0 };
+        ctx.addr -= 0x20;
+        if (VMI_FAILURE == vmi_write(vmi, &ctx, 0x20, home_space, NULL))
+            goto err;
+
+        // save the return address
+        ctx.addr -= 0x8;
+        if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &info->regs->rip))
+            goto err;
+
+        // Grow the stack
+        info->regs->rsp = ctx.addr;
+    }
+
+    // Current RIP is on NtClose already
+    // info->regs->rip = exec_func;
+
+    injector->bp->name = "final NtClose ret";
+    injector->bp->cb = final_closehandle_cb;
+
+    response = VMI_EVENT_RESPONSE_SET_REGISTERS;
+
+    goto done;
+
+err:
+    PRINT_DEBUG("[FILEDELETE] [NtReadFile] Error. Stop processing (CR3 0x%lx, TID %d).\n",
+            info->regs->cr3, thread_id);
+
+    thread = std::make_pair(info->regs->cr3, thread_id);
+    injector->f->closing_handles[thread] = true;
+
+    memcpy(info->regs, &injector->saved_regs, sizeof(x86_registers_t));
+    response = VMI_EVENT_RESPONSE_SET_REGISTERS;
+
+    drakvuf_remove_trap(drakvuf, injector->bp, (drakvuf_trap_free_t)free);
+
+    delete injector;
+
+done:
+    drakvuf_release_vmi(drakvuf);
+
+    return response;
+}
+
+static event_response_t duplicatehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
+{
+    struct injector* injector = (struct injector*)info->trap->data;
+
+    auto response = 0;
+    uint32_t thread_id = 0;
+    std::pair<addr_t, uint32_t> thread;
 
     vmi_instance_t vmi = drakvuf_lock_and_get_vmi(drakvuf);
 
@@ -629,28 +765,14 @@ static event_response_t duplicatehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_
 
         PRINT_DEBUG("[FILEDELETE] [DuplicateHandle] Duplicate handle of %lu is %lu. (CR3 0x%lx, TID %d)\n", injector->handle, injector->file.handle, info->regs->cr3, thread_id);
 
-        // TODO Move into read file
+        const char* lib = "ntdll.dll";
+        const char* fun = "NtReadFile";
+
+        auto exec_func = drakvuf_exportsym_to_va(drakvuf, injector->eprocess_base, lib, fun);
+        if (!exec_func)
         {
-            // TODO Idx should be calculated per file
-            static uint64_t idx = 0;
-            char* file = NULL;
-            if ( asprintf(&file, "%s/file.%06lu.metadata", f->dump_folder, idx++) < 0 )
-                goto err;
-
-            FILE* fp = fopen(file, "w");
-            if (!fp)
-            {
-                free(file);
-                goto err;
-            }
-
-            fprintf(fp, "FileName: \"%s\"\n", injector->f->files[info->proc_data.pid][injector->handle].c_str());
-            fprintf(fp, "PID: %" PRIu64 "\n", static_cast<uint64_t>(info->proc_data.pid));
-            fprintf(fp, "PPID: %" PRIu64 "\n", static_cast<uint64_t>(info->proc_data.ppid));
-            fprintf(fp, "ProcessName: \"%s\"\n", info->proc_data.name);
-
-            fclose(fp);
-            free(file);
+            PRINT_DEBUG("[FILEDELETE] [DuplicateHandle] Failed to get VA of '%s!%s'.\n", lib, fun);
+            goto err;
         }
 
         {
@@ -670,8 +792,48 @@ static event_response_t duplicatehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_
                 goto err;
             }
 
+            uint64_t null64 = 0;
+
+            ctx.addr -= 16;
+            auto pio_status_block = ctx.addr;
+
+            injector->ntreadfile_info.size = std::min(injector->file.size, 0x4000UL);
+            ctx.addr -= injector->ntreadfile_info.size;
+            injector->ntreadfile_info.out = ctx.addr;
+
+            //p9
+            ctx.addr -= 8;
+            if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &null64))
+                goto err;
+
+            //p8
+            ctx.addr -= 8;
+            if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &null64))
+                goto err;
+
+            //p7
+            ctx.addr -= 8;
+            if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &injector->ntreadfile_info.size))
+                goto err;
+
+            //p6
+            ctx.addr -= 8;
+            if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &injector->ntreadfile_info.out))
+                goto err;
+
+            //p5
+            ctx.addr -= 8;
+            if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &pio_status_block))
+                goto err;
+
             //p1
-            info->regs->rcx = injector->file.handle;
+            info->regs->rcx = injector->handle;
+            //p2
+            info->regs->rdx = 0;
+            //p3
+            info->regs->r8 = 0;
+            //p4
+            info->regs->r9 = 0;
 
             // allocate 0x20 "homing space"
             uint64_t home_space[4] = { 0 };
@@ -688,11 +850,10 @@ static event_response_t duplicatehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_
             info->regs->rsp = ctx.addr;
         }
 
-        // Current RIP is on NtClose already
-        // info->regs->rip = exec_func;
+        info->regs->rip = exec_func;
 
-        injector->bp->name = "final NtClose ret";
-        injector->bp->cb = final_closehandle_cb;
+        injector->bp->name = "NtReadFile ret";
+        injector->bp->cb = readfile_cb;
 
         response = VMI_EVENT_RESPONSE_SET_REGISTERS;
 
