@@ -1504,8 +1504,8 @@ static event_response_t writefile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* inf
     if (!filename_us)
         goto done;
 
-    if (std::string::npos != f->files[info->proc_data.pid][handle].find("DRAKVUF"))
-        printf("[NtWriteFile] (%x, %lx, %s)\n", info->proc_data.pid, handle, f->files[info->proc_data.pid][handle].c_str());
+    f->files[info->proc_data.pid][handle] = std::string((const char*)filename_us->contents);
+
 done:
     drakvuf_release_vmi(drakvuf);
     return 0;
