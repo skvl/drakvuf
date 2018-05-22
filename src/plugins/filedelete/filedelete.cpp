@@ -622,7 +622,7 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
         // TODO Idx should be calculated per file
         static uint64_t idx = 0;
         char* file = NULL;
-        if ( asprintf(&file, "%s/file.%06lu.metadata", f->dump_folder, idx++) < 0 )
+        if ( asprintf(&file, "%s/file.%06lu.metadata", f->dump_folder, ++idx) < 0 )
             goto err;
 
         FILE* fp = fopen(file, "w");
