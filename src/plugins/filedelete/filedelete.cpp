@@ -609,6 +609,12 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
     std::pair<addr_t, uint32_t> thread;
     filedelete* f = injector->f;
 
+    access_context_t ctx =
+    {
+        .translate_mechanism = VMI_TM_PROCESS_DTB,
+        .dtb = info->regs->cr3,
+    };
+
     vmi_instance_t vmi = drakvuf_lock_and_get_vmi(drakvuf);
 
     if (info->regs->cr3 != injector->target_cr3)
@@ -618,6 +624,7 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
          !injector->target_thread_id || thread_id != injector->target_thread_id )
         goto done;
 
+    if ( !(info->regs->rax & 0x80000000) )
     {
         // TODO Idx should be calculated per file
         static uint64_t idx = 0;
@@ -640,13 +647,7 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
         fclose(fp);
         free(file);
 
-        access_context_t ctx =
-        {
-            .translate_mechanism = VMI_TM_PROCESS_DTB,
-            .dtb = info->regs->cr3,
-            .addr = injector->ntreadfile_info.out,
-        };
-
+        ctx.addr = injector->ntreadfile_info.out;
         void* buffer = g_malloc0(injector->ntreadfile_info.size);
         if ((VMI_FAILURE == vmi_read(vmi, &ctx, injector->ntreadfile_info.size, buffer, NULL)))
                 goto err;
@@ -664,23 +665,21 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
         fwrite(buffer, 1, injector->ntreadfile_info.size, fp);
         fclose(fp);
         free(file);
+
     }
+    else
+        PRINT_DEBUG("[FILEDELETE] [NtReadFile] Failed with status 0x%lx.\n", info->regs->rax);
 
     {
         // Remove stack arguments and home space from previous injection
         info->regs->rsp = injector->saved_regs.rsp;
 
-        access_context_t ctx =
-        {
-        .translate_mechanism = VMI_TM_PROCESS_DTB,
-        .dtb = info->regs->cr3,
-        .addr = info->regs->rsp,
-        };
+        ctx.addr = info->regs->rsp;
 
         if (injector->is32bit)
         {
-        PRINT_DEBUG("[FILEDELETE] 32bit VMs not supported yet\n");
-        goto err;
+            PRINT_DEBUG("[FILEDELETE] 32bit VMs not supported yet\n");
+            goto err;
         }
 
         //p1
