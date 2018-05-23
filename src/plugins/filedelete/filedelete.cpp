@@ -827,7 +827,7 @@ static event_response_t duplicatehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_
                 goto err;
 
             //p1
-            info->regs->rcx = injector->handle;
+            info->regs->rcx = injector->file.handle;
             //p2
             info->regs->rdx = 0;
             //p3
