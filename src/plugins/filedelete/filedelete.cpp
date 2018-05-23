@@ -525,7 +525,7 @@ struct injector
     filedelete* f;
     bool is32bit;
 
-    reg_t handle;
+    uint32_t handle;
 
     reg_t target_cr3;
     uint32_t target_thread_id;
@@ -537,7 +537,7 @@ struct injector
     {
         uint64_t size;
         // Duplicate handle
-        reg_t handle;
+        uint32_t handle;
     } file;
 
     union
@@ -581,7 +581,7 @@ static event_response_t final_closehandle_cb(drakvuf_t drakvuf, drakvuf_trap_inf
          !injector->target_thread_id || thread_id != injector->target_thread_id )
         goto done;
 
-    PRINT_DEBUG("[FILEDELETE] [final NtClose] Finish processing handle %lu (dup %lu). (CR3 0x%lx, TID %d)\n", injector->file.handle, injector->handle, info->regs->cr3, thread_id);
+    PRINT_DEBUG("[FILEDELETE] [final NtClose] Finish processing handle %u (dup %u). (CR3 0x%lx, TID %d)\n", injector->file.handle, injector->handle, info->regs->cr3, thread_id);
 
     thread = std::make_pair(info->regs->cr3, thread_id);
     injector->f->closing_handles[thread] = true;
@@ -730,7 +730,7 @@ done:
     return response;
 }
 
-static event_response_t duplicatehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
+static event_response_t setfilepointer_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
 {
     struct injector* injector = (struct injector*)info->trap->data;
 
@@ -747,30 +747,15 @@ static event_response_t duplicatehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_
          !injector->target_thread_id || thread_id != injector->target_thread_id )
         goto done;
 
-    if (info->regs->rax != 0)
+    if ((uint32_t)info->regs->rax != 0xffffffff)
     {
-        access_context_t ctx =
-        {
-            .translate_mechanism = VMI_TM_PROCESS_DTB,
-            .dtb = info->regs->cr3,
-            .addr = injector->duplicatehandle_info.out,
-        };
-
-        if (VMI_FAILURE == vmi_read_32(vmi, &ctx, (uint32_t*)&injector->file.handle))
-        {
-            PRINT_DEBUG("[FILEDELETE] [DuplicateHandle] Failed to read duplicate handle.\n");
-            goto err;
-        }
-
-        PRINT_DEBUG("[FILEDELETE] [DuplicateHandle] Duplicate handle of %lu is %lu. (CR3 0x%lx, TID %d)\n", injector->handle, injector->file.handle, info->regs->cr3, thread_id);
-
         const char* lib = "ntdll.dll";
         const char* fun = "NtReadFile";
 
         auto exec_func = drakvuf_exportsym_to_va(drakvuf, injector->eprocess_base, lib, fun);
         if (!exec_func)
         {
-            PRINT_DEBUG("[FILEDELETE] [DuplicateHandle] Failed to get VA of '%s!%s'.\n", lib, fun);
+            PRINT_DEBUG("[FILEDELETE] [SetFilePointer] Failed to get VA of '%s!%s'.\n", lib, fun);
             goto err;
         }
 
@@ -853,6 +838,123 @@ static event_response_t duplicatehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_
 
         injector->bp->name = "NtReadFile ret";
         injector->bp->cb = readfile_cb;
+
+        response = VMI_EVENT_RESPONSE_SET_REGISTERS;
+
+        goto done;
+    }
+    else
+        goto err;
+
+err:
+    PRINT_DEBUG("[FILEDELETE] [SetFilePointer] Error. Stop processing (CR3 0x%lx, TID %d).\n",
+            info->regs->cr3, thread_id);
+
+    thread = std::make_pair(info->regs->cr3, thread_id);
+    injector->f->closing_handles[thread] = true;
+
+    memcpy(info->regs, &injector->saved_regs, sizeof(x86_registers_t));
+    response = VMI_EVENT_RESPONSE_SET_REGISTERS;
+
+    drakvuf_remove_trap(drakvuf, injector->bp, (drakvuf_trap_free_t)free);
+
+    delete injector;
+
+done:
+    drakvuf_release_vmi(drakvuf);
+
+    return response;
+}
+
+static event_response_t duplicatehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
+{
+    struct injector* injector = (struct injector*)info->trap->data;
+
+    auto response = 0;
+    uint32_t thread_id = 0;
+    std::pair<addr_t, uint32_t> thread;
+
+    vmi_instance_t vmi = drakvuf_lock_and_get_vmi(drakvuf);
+
+    if (info->regs->cr3 != injector->target_cr3)
+        goto done;
+
+    if ( !drakvuf_get_current_thread_id(drakvuf, info->vcpu, &thread_id) ||
+         !injector->target_thread_id || thread_id != injector->target_thread_id )
+        goto done;
+
+    if (info->regs->rax != 0)
+    {
+        access_context_t ctx =
+        {
+            .translate_mechanism = VMI_TM_PROCESS_DTB,
+            .dtb = info->regs->cr3,
+            .addr = injector->duplicatehandle_info.out,
+        };
+
+        if (VMI_FAILURE == vmi_read_32(vmi, &ctx, (uint32_t*)&injector->file.handle))
+        {
+            PRINT_DEBUG("[FILEDELETE] [DuplicateHandle] Failed to read duplicate handle.\n");
+            goto err;
+        }
+
+        PRINT_DEBUG("[FILEDELETE] [DuplicateHandle] Duplicate handle of %u is %u. (CR3 0x%lx, TID %d) (RAX 0x%lx)\n", injector->handle, injector->file.handle, info->regs->cr3, thread_id, info->regs->rax);
+
+        const char* lib = "kernel32.dll";
+        const char* fun = "SetFilePointer";
+
+        auto exec_func = drakvuf_exportsym_to_va(drakvuf, injector->eprocess_base, lib, fun);
+        if (!exec_func)
+        {
+            PRINT_DEBUG("[FILEDELETE] [DuplicateHandle] Failed to get VA of '%s!%s'.\n", lib, fun);
+            goto err;
+        }
+
+        {
+            // Remove stack arguments and home space from previous injection
+            info->regs->rsp = injector->saved_regs.rsp;
+
+            access_context_t ctx =
+            {
+                .translate_mechanism = VMI_TM_PROCESS_DTB,
+                .dtb = info->regs->cr3,
+                .addr = info->regs->rsp,
+            };
+
+            if (injector->is32bit)
+            {
+                PRINT_DEBUG("[FILEDELETE] 32bit VMs not supported yet\n");
+                goto err;
+            }
+
+            //p1
+            info->regs->rcx = injector->file.handle;
+            //p2
+            info->regs->rdx = 0;
+            //p3
+            info->regs->r8 = 0;
+            //p4
+            info->regs->r9 = 0;
+
+            // allocate 0x20 "homing space"
+            uint64_t home_space[4] = { 0 };
+            ctx.addr -= 0x20;
+            if (VMI_FAILURE == vmi_write(vmi, &ctx, 0x20, home_space, NULL))
+                goto err;
+
+            // save the return address
+            ctx.addr -= 0x8;
+            if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &info->regs->rip))
+                goto err;
+
+            // Grow the stack
+            info->regs->rsp = ctx.addr;
+        }
+
+        info->regs->rip = exec_func;
+
+        injector->bp->name = "SetFilePointer ret";
+        injector->bp->cb = setfilepointer_cb;
 
         response = VMI_EVENT_RESPONSE_SET_REGISTERS;
 
@@ -1291,6 +1393,8 @@ static event_response_t closehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* i
     injector->is32bit = f->pm == VMI_PM_IA32E ? false : true;
     injector->target_cr3 = info->regs->cr3;
     injector->ntqueryobject_info.get_type_info = false;
+    injector->file.size = 0;
+    injector->file.handle = 0;
 
     injector->eprocess_base = drakvuf_get_current_process(drakvuf, info->vcpu);
     if ( 0 == injector->eprocess_base )
