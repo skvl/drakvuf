@@ -132,15 +132,11 @@ public:
         }
     };
     size_t* offsets;
-    size_t control_area_size, mmpte_size;
 
     const char* dump_folder;
     page_mode_t pm;
     uint32_t domid;
     output_format_t format;
-
-    std::set<std::pair<vmi_pid_t, uint64_t>> changed_file_handles;
-    int sequence_number;
 
     // TODO Use `vmi_pid_t` instead
     // TODO Use named types
