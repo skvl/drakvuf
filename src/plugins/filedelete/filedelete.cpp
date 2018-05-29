@@ -117,12 +117,6 @@
 
 #define FILE_DISPOSITION_INFORMATION 13
 
-#undef UNUSED
-#define UNUSED __attribute__((unused))
-
-#undef PRINT_DEBUG
-#define PRINT_DEBUG printf
-
 enum offset
 {
     FILE_OBJECT_TYPE,
