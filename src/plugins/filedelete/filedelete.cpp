@@ -237,7 +237,7 @@ static event_response_t final_closehandle_cb(drakvuf_t drakvuf, drakvuf_trap_inf
         goto done;
 
     if ( !drakvuf_get_current_thread_id(drakvuf, info->vcpu, &thread_id) ||
-         !injector->target_thread_id || thread_id != injector->target_thread_id )
+            !injector->target_thread_id || thread_id != injector->target_thread_id )
         goto done;
 
     PRINT_DEBUG("[FILEDELETE] [final NtClose] Finish processing handle %u (dup %u). (CR3 0x%lx, TID %d)\n", injector->file.handle, injector->handle, info->regs->cr3, thread_id);
@@ -280,7 +280,7 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
         goto done;
 
     if ( !drakvuf_get_current_thread_id(drakvuf, info->vcpu, &thread_id) ||
-         !injector->target_thread_id || thread_id != injector->target_thread_id )
+            !injector->target_thread_id || thread_id != injector->target_thread_id )
         goto done;
 
     if ( !(info->regs->rax & 0x80000000) )
@@ -309,7 +309,7 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
         ctx.addr = injector->ntreadfile_info.out;
         void* buffer = g_malloc0(injector->ntreadfile_info.size);
         if ((VMI_FAILURE == vmi_read(vmi, &ctx, injector->ntreadfile_info.size, buffer, NULL)))
-                goto err;
+            goto err;
 
         if ( asprintf(&file, "%s/file.%06lu", f->dump_folder, idx) < 0 )
             goto err;
@@ -371,7 +371,7 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
 
 err:
     PRINT_DEBUG("[FILEDELETE] [NtReadFile] Error. Stop processing (CR3 0x%lx, TID %d).\n",
-            info->regs->cr3, thread_id);
+                info->regs->cr3, thread_id);
 
     thread = std::make_pair(info->regs->cr3, thread_id);
     injector->f->closing_handles[thread] = true;
@@ -403,7 +403,7 @@ static event_response_t setfilepointer_cb(drakvuf_t drakvuf, drakvuf_trap_info_t
         goto done;
 
     if ( !drakvuf_get_current_thread_id(drakvuf, info->vcpu, &thread_id) ||
-         !injector->target_thread_id || thread_id != injector->target_thread_id )
+            !injector->target_thread_id || thread_id != injector->target_thread_id )
         goto done;
 
     if ((uint32_t)info->regs->rax != 0xffffffff)
@@ -507,7 +507,7 @@ static event_response_t setfilepointer_cb(drakvuf_t drakvuf, drakvuf_trap_info_t
 
 err:
     PRINT_DEBUG("[FILEDELETE] [SetFilePointer] Error. Stop processing (CR3 0x%lx, TID %d).\n",
-            info->regs->cr3, thread_id);
+                info->regs->cr3, thread_id);
 
     thread = std::make_pair(info->regs->cr3, thread_id);
     injector->f->closing_handles[thread] = true;
@@ -539,7 +539,7 @@ static event_response_t duplicatehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_
         goto done;
 
     if ( !drakvuf_get_current_thread_id(drakvuf, info->vcpu, &thread_id) ||
-         !injector->target_thread_id || thread_id != injector->target_thread_id )
+            !injector->target_thread_id || thread_id != injector->target_thread_id )
         goto done;
 
     if (info->regs->rax != 0)
@@ -624,7 +624,7 @@ static event_response_t duplicatehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_
 
 err:
     PRINT_DEBUG("[FILEDELETE] [DuplicateHandle] Error. Stop processing (CR3 0x%lx, TID %d).\n",
-            info->regs->cr3, thread_id);
+                info->regs->cr3, thread_id);
 
     thread = std::make_pair(info->regs->cr3, thread_id);
     injector->f->closing_handles[thread] = true;
@@ -656,7 +656,7 @@ static event_response_t getfileinformationbyhandle_cb(drakvuf_t drakvuf, drakvuf
         goto done;
 
     if ( !drakvuf_get_current_thread_id(drakvuf, info->vcpu, &thread_id) ||
-         !injector->target_thread_id || thread_id != injector->target_thread_id )
+            !injector->target_thread_id || thread_id != injector->target_thread_id )
         goto done;
 
     {
@@ -671,7 +671,7 @@ static event_response_t getfileinformationbyhandle_cb(drakvuf_t drakvuf, drakvuf
 
         size_t bytes_read = 0;
         if (VMI_FAILURE == vmi_read(vmi, &ctx, sizeof(struct by_handle_file_information), &file_info, &bytes_read) ||
-            bytes_read != sizeof(struct by_handle_file_information))
+                bytes_read != sizeof(struct by_handle_file_information))
         {
             PRINT_DEBUG("[FILEDELETE] [GetFileInformationByHandle] Failed to read output structure.\n");
             goto err;
@@ -681,7 +681,7 @@ static event_response_t getfileinformationbyhandle_cb(drakvuf_t drakvuf, drakvuf
         if ( !(FILE_ATTRIBUTE_IGNORE & file_info.dwFileAttributes) && injector->file.size > 0)
         {
             PRINT_DEBUG("[FILEDELETE] [GetFileInformationByHandle] File '%s', size is 0x%lx (CR3 0x%lx, TID %d).\n",
-                    injector->f->files[info->proc_data.pid][injector->handle].c_str(), injector->file.size, info->regs->cr3, thread_id);
+                        injector->f->files[info->proc_data.pid][injector->handle].c_str(), injector->file.size, info->regs->cr3, thread_id);
 
             const char* lib = "kernel32.dll";
             const char* fun = "DuplicateHandle";
@@ -776,7 +776,7 @@ static event_response_t getfileinformationbyhandle_cb(drakvuf_t drakvuf, drakvuf
 
 err:
     PRINT_DEBUG("[FILEDELETE] [GetFileInformationByHandle] Error. Stop processing (CR3 0x%lx, TID %d).\n",
-            info->regs->cr3, thread_id);
+                info->regs->cr3, thread_id);
 
 handled:
     thread = std::make_pair(info->regs->cr3, thread_id);
@@ -810,7 +810,7 @@ static event_response_t ntqueryobject_cb(drakvuf_t drakvuf, drakvuf_trap_info_t*
         goto done;
 
     if ( !drakvuf_get_current_thread_id(drakvuf, info->vcpu, &thread_id) ||
-         !injector->target_thread_id || thread_id != injector->target_thread_id )
+            !injector->target_thread_id || thread_id != injector->target_thread_id )
         goto done;
 
     if (!injector->ntqueryobject_info.get_type_info)
@@ -985,7 +985,7 @@ static event_response_t ntqueryobject_cb(drakvuf_t drakvuf, drakvuf_trap_info_t*
 
 err:
     PRINT_DEBUG("[FILEDELETE] [NtQueryObject] Error. Stop processing (CR3 0x%lx, TID %d).\n",
-            info->regs->cr3, thread_id);
+                info->regs->cr3, thread_id);
 
 handled:
     thread = std::make_pair(info->regs->cr3, thread_id);
@@ -1064,7 +1064,7 @@ static event_response_t closehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* i
     }
 
     if ( !drakvuf_get_current_thread_id(drakvuf, info->vcpu, &injector->target_thread_id) ||
-         !injector->target_thread_id )
+            !injector->target_thread_id )
     {
         PRINT_DEBUG("[FILEDELETE] Failed to get Thread ID\n");
         goto err;
@@ -1214,7 +1214,7 @@ static event_response_t writefile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* inf
 
     handle_t handle = 0;
     addr_t eprocess_base = 0;
-    addr_t obj = 0; 
+    addr_t obj = 0;
     uint8_t type = 0;
     unicode_string_t* filename_us = nullptr;
     addr_t file = 0;

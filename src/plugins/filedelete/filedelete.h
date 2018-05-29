@@ -113,9 +113,9 @@
 #include <utility>
 #include <cstdint>
 
- using handle_t = reg_t;
- using handled_t = bool;
- using file_name_t = std::string;
+using handle_t = reg_t;
+using handled_t = bool;
+using file_name_t = std::string;
 
 class filedelete: public plugin
 {
