@@ -348,7 +348,7 @@ static void grab_file_by_handle(filedelete* f, drakvuf_t drakvuf,
                                 drakvuf_trap_info_t* info, addr_t handle)
 {
     uint8_t type = 0;
-    addr_t process = drakvuf_get_current_process(drakvuf, info->vcpu);
+    addr_t process=drakvuf_get_current_process(drakvuf, info->vcpu);
 
     // TODO: verify that the dtb in the _EPROCESS is the same as the cr3?
 
@@ -384,11 +384,6 @@ static void grab_file_by_handle(filedelete* f, drakvuf_t drakvuf,
             case OUTPUT_CSV:
                 printf("filedelete," FORMAT_TIMEVAL ",%" PRIu32 ",0x%" PRIx64 ",\"%s\",%" PRIi64 ",\"%s\"\n",
                        UNPACK_TIMEVAL(info->timestamp), info->vcpu, info->regs->cr3, info->proc_data.name, info->proc_data.userid, filename_us->contents);
-                break;
-            case OUTPUT_KV:
-                printf("filedelete Time=" FORMAT_TIMEVAL ",PID=%d,PPID=%d,ProcessName=\"%s\",Method=%s,FileName=\"%s\"\n",
-                       UNPACK_TIMEVAL(info->timestamp), info->proc_data.pid, info->proc_data.ppid, info->proc_data.name,
-                       info->trap->name, filename_us->contents);
                 break;
             default:
             case OUTPUT_DEFAULT:
@@ -470,34 +465,6 @@ done:
     return 0;
 }
 
-static event_response_t writefile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
-{
-    filedelete* f = (filedelete*)info->trap->data;
-    vmi_instance_t vmi = drakvuf_lock_and_get_vmi(drakvuf);
-
-    reg_t handle = 0;
-
-    if (f->pm == VMI_PM_IA32E)
-    {
-        handle = info->regs->rcx;
-    }
-    else
-    {
-        access_context_t ctx;
-        ctx.translate_mechanism = VMI_TM_PROCESS_DTB;
-        ctx.dtb = info->regs->cr3;
-        ctx.addr = info->regs->rsp + sizeof(uint32_t);
-        if ( VMI_FAILURE == vmi_read_32(vmi, &ctx, (uint32_t*) &handle) )
-            goto done;
-    }
-
-    f->changed_file_handles.insert(std::make_pair(info->proc_data.pid, handle));
-
-done:
-    drakvuf_release_vmi(drakvuf);
-    return 0;
-}
-
 UNUSED
 static event_response_t close_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
 {
@@ -567,7 +534,6 @@ struct injector
 
     struct
     {
-        unicode_string_t* name;
         uint64_t size;
         // Duplicate handle
         reg_t handle;
@@ -600,6 +566,7 @@ static event_response_t final_closehandle_cb(drakvuf_t drakvuf, drakvuf_trap_inf
     auto response = 0;
     uint32_t thread_id = 0;
     std::pair<addr_t, uint32_t> thread;
+    auto pid = info->proc_data.pid;
 
     if (info->regs->cr3 != injector->target_cr3)
         goto done;
@@ -608,17 +575,19 @@ static event_response_t final_closehandle_cb(drakvuf_t drakvuf, drakvuf_trap_inf
          !injector->target_thread_id || thread_id != injector->target_thread_id )
         goto done;
 
-    PRINT_DEBUG("[FILEDELETE] [final NtClose] Finish processing handle %lu.\n", injector->file.handle);
+    PRINT_DEBUG("[FILEDELETE] [final NtClose] Finish processing handle %lu (dup %lu). (CR3 0x%lx, TID %d)\n", injector->file.handle, injector->handle, info->regs->cr3, thread_id);
 
     thread = std::make_pair(info->regs->cr3, thread_id);
     injector->f->closing_handles[thread] = true;
+    injector->f->files[pid].erase(injector->handle);
+    if (injector->f->files[pid].size() == 0)
+        injector->f->files.erase(pid);
 
     memcpy(info->regs, &injector->saved_regs, sizeof(x86_registers_t));
     response = VMI_EVENT_RESPONSE_SET_REGISTERS;
 
     drakvuf_remove_trap(drakvuf, injector->bp, (drakvuf_trap_free_t)free);
 
-    vmi_free_unicode_str(injector->file.name);
     delete injector;
 
 done:
@@ -658,7 +627,7 @@ static event_response_t duplicatehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_
             goto err;
         }
 
-        PRINT_DEBUG("[FILEDELETE] [DuplicateHandle] Duplicate handle is %lu.\n", injector->file.handle);
+        PRINT_DEBUG("[FILEDELETE] [DuplicateHandle] Duplicate handle of %lu is %lu. (CR3 0x%lx, TID %d)\n", injector->handle, injector->file.handle, info->regs->cr3, thread_id);
 
         // TODO Move into read file
         {
@@ -675,7 +644,7 @@ static event_response_t duplicatehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_
                 goto err;
             }
 
-            fprintf(fp, "FileName: \"%s\"\n", injector->file.name->contents);
+            fprintf(fp, "FileName: \"%s\"\n", injector->f->files[info->proc_data.pid][injector->handle].c_str());
             fprintf(fp, "PID: %" PRIu64 "\n", static_cast<uint64_t>(info->proc_data.pid));
             fprintf(fp, "PPID: %" PRIu64 "\n", static_cast<uint64_t>(info->proc_data.ppid));
             fprintf(fp, "ProcessName: \"%s\"\n", info->proc_data.name);
@@ -744,7 +713,6 @@ err:
 
     drakvuf_remove_trap(drakvuf, injector->bp, (drakvuf_trap_free_t)free);
 
-    vmi_free_unicode_str(injector->file.name);
     delete injector;
 
 done:
@@ -791,8 +759,8 @@ static event_response_t getfileinformationbyhandle_cb(drakvuf_t drakvuf, drakvuf
         injector->file.size = ((uint64_t)file_info.nFileSizeHigh) | file_info.nFileSizeLow;
         if ( !(FILE_ATTRIBUTE_IGNORE & file_info.dwFileAttributes) && injector->file.size > 0)
         {
-            PRINT_DEBUG("[FILEDELETE] [GetFileInformationByHandle] File '%s' attributes are 0x%x, size is 0x%lx.\n",
-                    injector->file.name->contents, file_info.dwFileAttributes, injector->file.size);
+            PRINT_DEBUG("[FILEDELETE] [GetFileInformationByHandle] File '%s', size is 0x%lx (CR3 0x%lx, TID %d).\n",
+                    injector->f->files[info->proc_data.pid][injector->handle].c_str(), injector->file.size, info->regs->cr3, thread_id);
 
             const char* lib = "kernel32.dll";
             const char* fun = "DuplicateHandle";
@@ -898,7 +866,6 @@ handled:
 
     drakvuf_remove_trap(drakvuf, injector->bp, (drakvuf_trap_free_t)free);
 
-    vmi_free_unicode_str(injector->file.name);
     delete injector;
 
 done:
@@ -1108,7 +1075,6 @@ handled:
 
     drakvuf_remove_trap(drakvuf, injector->bp, (drakvuf_trap_free_t)free);
 
-    vmi_free_unicode_str(injector->file.name);
     delete injector;
 
 done:
@@ -1138,12 +1104,6 @@ static event_response_t closehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* i
 
     access_context_t ctx;
     reg_t handle = 0;
-    addr_t obj = 0; 
-    uint8_t type = 0;
-    unicode_string_t* filename_us = nullptr;
-    addr_t file = 0;
-    addr_t filename = 0;
-    addr_t filetype = 0;
 
     if (f->pm == VMI_PM_IA32E)
     {
@@ -1158,10 +1118,16 @@ static event_response_t closehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* i
             goto err;
     }
 
+    /*
+     * Check if closing handle have been changed with NtWriteFile
+     */
+    if (f->files[info->proc_data.pid][handle].empty())
+        goto err;
+
+
     injector = new struct injector;
     injector->f = f;
     injector->handle = handle;
-    injector->file.name = nullptr;
     injector->is32bit = f->pm == VMI_PM_IA32E ? false : true;
     injector->target_cr3 = info->regs->cr3;
     injector->ntqueryobject_info.get_type_info = false;
@@ -1181,31 +1147,6 @@ static event_response_t closehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* i
         goto err;
     }
 
-    obj = drakvuf_get_obj_by_handle(drakvuf, injector->eprocess_base, handle);
-    if (!obj)
-        goto err;
-
-    file = obj + injector->f->offsets[OBJECT_HEADER_BODY];
-    filename = file + injector->f->offsets[FILE_OBJECT_FILENAME];
-    filetype = file + injector->f->offsets[FILE_OBJECT_TYPE];
-
-    ctx.translate_mechanism = VMI_TM_PROCESS_DTB;
-    ctx.addr = filetype;
-    ctx.dtb = info->regs->cr3;
-
-    if (VMI_FAILURE == vmi_read_8(vmi, &ctx, &type))
-        goto err;
-
-    if (type != 5)
-        goto err;
-
-    filename_us = drakvuf_read_unicode(drakvuf, info, filename);
-
-    if (filename_us)
-        injector->file.name = filename_us;
-    else
-        goto err;
-
     exec_func = drakvuf_exportsym_to_va(drakvuf, injector->eprocess_base, lib, fun);
     if (!exec_func)
     {
@@ -1221,27 +1162,18 @@ static event_response_t closehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* i
     {
         auto thread = std::make_pair(info->regs->cr3, injector->target_thread_id);
         auto thread_it = f->closing_handles.find(thread);
-        auto map_end = f->closing_handles.cend();
+        auto map_end = f->closing_handles.end();
         if (map_end != thread_it)
         {
             bool handled = thread_it->second;
             if (handled)
-            {
                 f->closing_handles.erase(thread);
-                f->changed_file_handles.erase(std::make_pair(info->proc_data.pid, handle));
-            }
 
             goto err;
         }
         else
             f->closing_handles[thread] = false;
     }
-
-    /*
-     * Check if closing handle have been changed with NtWriteFile
-     */
-    if (f->changed_file_handles.find(std::make_pair(info->proc_data.pid, handle)) == f->changed_file_handles.end())
-        goto err;
 
     /*
      * Real function body.
@@ -1345,16 +1277,77 @@ err:
         memcpy(info->regs, &injector->saved_regs, sizeof(x86_registers_t));
 
     if (injector)
-    {
-        if (injector->file.name)
-            vmi_free_unicode_str(injector->file.name);
-
         delete injector;
-    }
 
 done:
     drakvuf_release_vmi(drakvuf);
     return response;
+}
+
+static event_response_t writefile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
+{
+    filedelete* f = (filedelete*)info->trap->data;
+    vmi_instance_t vmi = drakvuf_lock_and_get_vmi(drakvuf);
+
+    handle_t handle = 0;
+    addr_t eprocess_base = 0;
+    addr_t obj = 0; 
+    uint8_t type = 0;
+    unicode_string_t* filename_us = nullptr;
+    addr_t file = 0;
+    addr_t filename = 0;
+    addr_t filetype = 0;
+    access_context_t ctx;
+
+    if (f->pm == VMI_PM_IA32E)
+    {
+        handle = info->regs->rcx;
+    }
+    else
+    {
+        ctx.translate_mechanism = VMI_TM_PROCESS_DTB;
+        ctx.dtb = info->regs->cr3;
+        ctx.addr = info->regs->rsp + sizeof(uint32_t);
+        if ( VMI_FAILURE == vmi_read_32(vmi, &ctx, (uint32_t*) &handle) )
+            goto done;
+    }
+
+    eprocess_base = drakvuf_get_current_process(drakvuf, info->vcpu);
+    if ( 0 == eprocess_base )
+    {
+        PRINT_DEBUG("[FILEDELETE] [NtWriteFile] Failed to get process base on vCPU 0x%d\n",
+                    info->vcpu);
+        goto done;
+    }
+
+    obj = drakvuf_get_obj_by_handle(drakvuf, eprocess_base, handle);
+    if (!obj)
+        goto done;
+
+    file = obj + f->offsets[OBJECT_HEADER_BODY];
+    filename = file + f->offsets[FILE_OBJECT_FILENAME];
+    filetype = file + f->offsets[FILE_OBJECT_TYPE];
+
+    ctx.translate_mechanism = VMI_TM_PROCESS_DTB;
+    ctx.addr = filetype;
+    ctx.dtb = info->regs->cr3;
+
+    if (VMI_FAILURE == vmi_read_8(vmi, &ctx, &type))
+        goto done;
+
+    if (type != 5)
+        goto done;
+
+    filename_us = drakvuf_read_unicode(drakvuf, info, filename);
+
+    if (!filename_us)
+        goto done;
+
+    if (std::string::npos != f->files[info->proc_data.pid][handle].find("DRAKVUF"))
+        printf("[NtWriteFile] (%x, %lx, %s)\n", info->proc_data.pid, handle, f->files[info->proc_data.pid][handle].c_str());
+done:
+    drakvuf_release_vmi(drakvuf);
+    return 0;
 }
 
 static event_response_t cr3_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)

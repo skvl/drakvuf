@@ -113,6 +113,10 @@
 #include <utility>
 #include <cstdint>
 
+ using handle_t = reg_t;
+ using handled_t = bool;
+ using file_name_t = std::string;
+
 class filedelete: public plugin
 {
 public:
@@ -138,8 +142,13 @@ public:
     std::set<std::pair<vmi_pid_t, uint64_t>> changed_file_handles;
     int sequence_number;
 
-    // TODO std::unordered_set may suit better for this because of search spead
-    std::map<std::pair<addr_t, uint32_t>, bool> closing_handles;
+    // TODO Use `vmi_pid_t` instead
+    // TODO Use named types
+    // TODO Rename to `targets`
+    // Save info about target processes/threads which control flow have been
+    // influenced by injection
+    std::map<std::pair<addr_t, uint32_t>, handled_t> closing_handles;
+    std::map<vmi_pid_t, std::map<handle_t, file_name_t>> files;
 
     filedelete(drakvuf_t drakvuf, const void* config, output_format_t output);
     ~filedelete();
