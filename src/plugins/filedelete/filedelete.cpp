@@ -216,6 +216,8 @@ struct injector
 
         struct
         {
+            addr_t exec_func;
+            size_t bytes_read;
             size_t size;
             addr_t out;
         } ntreadfile_info;
@@ -285,10 +287,13 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
 
     if ( !(info->regs->rax & 0x80000000) )
     {
-        // TODO Idx should be calculated per file
         static uint64_t idx = 0;
         char* file = NULL;
-        if ( asprintf(&file, "%s/file.%06lu.metadata", f->dump_folder, ++idx) < 0 )
+
+        if (injector->ntreadfile_info.bytes_read == 0)
+            ++idx;
+
+        if ( asprintf(&file, "%s/file.%06lu.metadata", f->dump_folder, idx) < 0 )
             goto err;
 
         FILE* fp = fopen(file, "w");
@@ -314,7 +319,7 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
         if ( asprintf(&file, "%s/file.%06lu", f->dump_folder, idx) < 0 )
             goto err;
 
-        fp = fopen(file, "w");
+        fp = fopen(file, "a");
         if (!fp)
         {
             free(file);
@@ -325,6 +330,84 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
         fclose(fp);
         free(file);
 
+        injector->ntreadfile_info.bytes_read += injector->ntreadfile_info.size;
+
+        if (injector->ntreadfile_info.bytes_read < injector->file.size)
+        {
+            // Remove stack arguments and home space from previous injection
+            info->regs->rsp = injector->saved_regs.rsp;
+
+            ctx.addr = info->regs->rsp;
+
+            if (injector->is32bit)
+            {
+                PRINT_DEBUG("[FILEDELETE] 32bit VMs not supported yet\n");
+                goto err;
+            }
+
+            uint64_t null64 = 0;
+
+            ctx.addr -= 16;
+            auto pio_status_block = ctx.addr;
+
+            injector->ntreadfile_info.size = std::min(injector->file.size - injector->ntreadfile_info.bytes_read, 0x4000UL);
+            ctx.addr -= injector->ntreadfile_info.size;
+            injector->ntreadfile_info.out = ctx.addr;
+
+            //p9
+            ctx.addr -= 8;
+            if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &null64))
+                goto err;
+
+            //p8
+            ctx.addr -= 8;
+            if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &null64))
+                goto err;
+
+            //p7
+            ctx.addr -= 8;
+            if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &injector->ntreadfile_info.size))
+                goto err;
+
+            //p6
+            ctx.addr -= 8;
+            if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &injector->ntreadfile_info.out))
+                goto err;
+
+            //p5
+            ctx.addr -= 8;
+            if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &pio_status_block))
+                goto err;
+
+            //p1
+            info->regs->rcx = injector->file.handle;
+            //p2
+            info->regs->rdx = 0;
+            //p3
+            info->regs->r8 = 0;
+            //p4
+            info->regs->r9 = 0;
+
+            // allocate 0x20 "homing space"
+            uint64_t home_space[4] = { 0 };
+            ctx.addr -= 0x20;
+            if (VMI_FAILURE == vmi_write(vmi, &ctx, 0x20, home_space, NULL))
+                goto err;
+
+            // save the return address
+            ctx.addr -= 0x8;
+            if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &info->regs->rip))
+                goto err;
+
+            // Grow the stack
+            info->regs->rsp = ctx.addr;
+
+            info->regs->rip = injector->ntreadfile_info.exec_func;
+
+            response = VMI_EVENT_RESPONSE_SET_REGISTERS;
+
+            goto done;
+        }
     }
     else
         PRINT_DEBUG("[FILEDELETE] [NtReadFile] Failed with status 0x%lx.\n", info->regs->rax);
@@ -397,6 +480,9 @@ static event_response_t setfilepointer_cb(drakvuf_t drakvuf, drakvuf_trap_info_t
     uint32_t thread_id = 0;
     std::pair<addr_t, uint32_t> thread;
 
+    // This is part of union so need to clear it
+    injector->ntreadfile_info.bytes_read = 0;
+
     vmi_instance_t vmi = drakvuf_lock_and_get_vmi(drakvuf);
 
     if (info->regs->cr3 != injector->target_cr3)
@@ -417,6 +503,8 @@ static event_response_t setfilepointer_cb(drakvuf_t drakvuf, drakvuf_trap_info_t
             PRINT_DEBUG("[FILEDELETE] [SetFilePointer] Failed to get VA of '%s!%s'.\n", lib, fun);
             goto err;
         }
+        else
+            injector->ntreadfile_info.exec_func = exec_func;
 
         {
             // Remove stack arguments and home space from previous injection
