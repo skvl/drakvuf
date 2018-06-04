@@ -120,6 +120,12 @@ struct filedelete_config
     const char* dump_folder;
     bool dump_modified_files;
 };
+struct filedelete2_config
+{
+  const char* rekall_profile;
+  const char* dump_folder;
+  bool dump_modified_files;
+};
 struct socketmon_config
 {
     const char* rekall_profile;
@@ -139,6 +145,7 @@ typedef enum drakvuf_plugin
     PLUGIN_POOLMON,
     PLUGIN_FILETRACER,
     PLUGIN_FILEDELETE,
+    PLUGIN_FILEDELETE2,
     PLUGIN_OBJMON,
     PLUGIN_EXMON,
     PLUGIN_SSDTMON,
@@ -156,6 +163,7 @@ static const char* drakvuf_plugin_names[] =
     [PLUGIN_POOLMON] = "poolmon",
     [PLUGIN_FILETRACER] = "filetracer",
     [PLUGIN_FILEDELETE] = "filedelete",
+    [PLUGIN_FILEDELETE2] = "filedelete2",
     [PLUGIN_OBJMON] = "objmon",
     [PLUGIN_EXMON] = "exmon",
     [PLUGIN_SSDTMON] = "ssdtmon",
@@ -172,6 +180,7 @@ static const bool drakvuf_plugin_os_support[__DRAKVUF_PLUGIN_LIST_MAX][VMI_OS_WI
     [PLUGIN_POOLMON]    = { [VMI_OS_WINDOWS] = 1, [VMI_OS_LINUX] = 0 },
     [PLUGIN_FILETRACER] = { [VMI_OS_WINDOWS] = 1, [VMI_OS_LINUX] = 0 },
     [PLUGIN_FILEDELETE] = { [VMI_OS_WINDOWS] = 1, [VMI_OS_LINUX] = 0 },
+    [PLUGIN_FILEDELETE2] = { [VMI_OS_WINDOWS] = 1, [VMI_OS_LINUX] = 0 },
     [PLUGIN_OBJMON]     = { [VMI_OS_WINDOWS] = 1, [VMI_OS_LINUX] = 0 },
     [PLUGIN_EXMON]      = { [VMI_OS_WINDOWS] = 1, [VMI_OS_LINUX] = 0 },
     [PLUGIN_SSDTMON]    = { [VMI_OS_WINDOWS] = 1, [VMI_OS_LINUX] = 0 },

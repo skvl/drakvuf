@@ -102,8 +102,8 @@
  *                                                                         *
  ***************************************************************************/
 
-#ifndef FILEDELETE_H
-#define FILEDELETE_H
+#ifndef FILEDELETE2_H
+#define FILEDELETE2_H
 
 #include "plugins/private.h"
 #include "plugins/plugins.h"
@@ -117,7 +117,7 @@ using handle_t = reg_t;
 using handled_t = bool;
 using file_name_t = std::string;
 
-class filedelete: public plugin
+class filedelete2: public plugin
 {
 public:
     drakvuf_trap_t traps[4] =
@@ -146,8 +146,8 @@ public:
     std::map<std::pair<addr_t, uint32_t>, handled_t> closing_handles;
     std::map<vmi_pid_t, std::map<handle_t, file_name_t>> files;
 
-    filedelete(drakvuf_t drakvuf, const void* config, output_format_t output);
-    ~filedelete();
+    filedelete2(drakvuf_t drakvuf, const void* config, output_format_t output);
+    ~filedelete2();
 };
 
 #endif

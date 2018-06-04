@@ -181,7 +181,7 @@ struct by_handle_file_information
 
 struct injector
 {
-    filedelete* f;
+    filedelete2* f;
     bool is32bit;
 
     uint32_t handle;
@@ -268,7 +268,7 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
     auto response = 0;
     uint32_t thread_id = 0;
     std::pair<addr_t, uint32_t> thread;
-    filedelete* f = injector->f;
+    filedelete2* f = injector->f;
 
     access_context_t ctx =
     {
@@ -1108,7 +1108,7 @@ static event_response_t closehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* i
     const char* fun = "NtQueryObject";
     addr_t exec_func = 0;
 
-    filedelete* f = (filedelete*)info->trap->data;
+    filedelete2* f = (filedelete2*)info->trap->data;
     vmi_instance_t vmi = drakvuf_lock_and_get_vmi(drakvuf);
 
     access_context_t ctx;
@@ -1297,7 +1297,7 @@ done:
 
 static event_response_t writefile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
 {
-    filedelete* f = (filedelete*)info->trap->data;
+    filedelete2* f = (filedelete2*)info->trap->data;
     vmi_instance_t vmi = drakvuf_lock_and_get_vmi(drakvuf);
 
     handle_t handle = 0;
@@ -1367,7 +1367,7 @@ static event_response_t cr3_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
     addr_t exec_func = 0;
     const char* lib = "ntdll.dll";
     const char* fun = "NtClose";
-    filedelete* f = (filedelete*)info->trap->data;
+    filedelete2* f = (filedelete2*)info->trap->data;
 
     auto eprocess_base = drakvuf_get_current_process(drakvuf, info->vcpu);
     if ( 0 == eprocess_base )
@@ -1419,9 +1419,9 @@ static void register_trap( drakvuf_t drakvuf, const char* rekall_profile, const 
     if ( ! drakvuf_add_trap( drakvuf, trap ) ) throw -1;
 }
 
-filedelete::filedelete(drakvuf_t drakvuf, const void* config, output_format_t output)
+filedelete2::filedelete2(drakvuf_t drakvuf, const void* config, output_format_t output)
 {
-    const struct filedelete_config* c = (const struct filedelete_config*)config;
+    const struct filedelete2_config* c = (const struct filedelete2_config*)config;
     vmi_instance_t vmi = drakvuf_lock_and_get_vmi(drakvuf);
     this->pm = vmi_get_page_mode(vmi, 0);
     this->domid = vmi_get_vmid(vmi);
@@ -1456,7 +1456,7 @@ filedelete::filedelete(drakvuf_t drakvuf, const void* config, output_format_t ou
     }
 }
 
-filedelete::~filedelete()
+filedelete2::~filedelete2()
 {
     free(this->offsets);
 }

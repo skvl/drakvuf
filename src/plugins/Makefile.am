@@ -122,6 +122,10 @@ if PLUGIN_FILEDELETE
 sources += filedelete/filedelete.cpp
 endif
 
+if PLUGIN_FILEDELETE2
+sources += filedelete2/filedelete.cpp
+endif
+
 if PLUGIN_OBJMON
 sources += objmon/objmon.cpp
 endif
