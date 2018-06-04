@@ -159,7 +159,7 @@ AC_ARG_ENABLE([plugin_filedelete2],
 [AS_HELP_STRING([--disable-plugin-filedelete2],
 [Enable the file delete catching plugin based on read file injection @<:@yes@:>@])],
 [plugin_filedelete2="$enableval"],
-[plugin_filedelete2="yes"])
+[plugin_filedelete2="no"])
 AM_CONDITIONAL([PLUGIN_FILEDELETE2], [test x$plugin_filedelete2 = xyes])
 if test x$plugin_filedelete2 = xyes; then
 AC_DEFINE_UNQUOTED(ENABLE_PLUGIN_FILEDELETE2, 1, "")
