@@ -122,9 +122,9 @@ struct filedelete_config
 };
 struct filedelete2_config
 {
-  const char* rekall_profile;
-  const char* dump_folder;
-  bool dump_modified_files;
+    const char* rekall_profile;
+    const char* dump_folder;
+    bool dump_modified_files;
 };
 struct socketmon_config
 {

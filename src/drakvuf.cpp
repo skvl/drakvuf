@@ -155,8 +155,8 @@ int drakvuf_c::start_plugins(const bool* plugin_list,
                     break;
                 }
 
-            case PLUGIN_FILEDELETE2:
-              {
+                case PLUGIN_FILEDELETE2:
+                {
                     struct filedelete2_config c =
                     {
                         .rekall_profile = this->rekall_profile,
@@ -164,9 +164,9 @@ int drakvuf_c::start_plugins(const bool* plugin_list,
                         .dump_modified_files = dump_modified_files
                     };
 
-                rc = this->plugins->start((drakvuf_plugin_t)i, &c);
-                break;
-              }
+                    rc = this->plugins->start((drakvuf_plugin_t)i, &c);
+                    break;
+                }
 
                 case PLUGIN_CPUIDMON:
                     rc = this->plugins->start((drakvuf_plugin_t)i, &cpuid_stealth);
