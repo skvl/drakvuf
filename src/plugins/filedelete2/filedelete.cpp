@@ -495,6 +495,13 @@ static event_response_t setfilepointer_cb(drakvuf_t drakvuf, drakvuf_trap_info_t
 
     if ((uint32_t)info->regs->rax != 0xffffffff)
     {
+        if (f->readfile_va != drakvuf_exportsym_to_va(drakvuf, injector->eprocess_base, "ntdll.dll", "NtReadFile"))
+        {
+            char *procname = (char*)"UNKNOWN";
+            procname = drakvuf_get_process_name(drakvuf, injector->eprocess_base);
+            printf("[SetFilePointer] [%s] No NtReadFile\n", procname);
+            goto err;
+        }
         {
             // Remove stack arguments and home space from previous injection
             info->regs->rsp = injector->saved_regs.rsp;
@@ -636,6 +643,13 @@ static event_response_t duplicatehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_
         }
 
         PRINT_DEBUG("[FILEDELETE] [DuplicateHandle] Duplicate handle of %u is %u. (CR3 0x%lx, TID %d) (RAX 0x%lx)\n", injector->handle, injector->file.handle, info->regs->cr3, thread_id, info->regs->rax);
+        if (f->seek_va != drakvuf_exportsym_to_va(drakvuf, injector->eprocess_base, "kernel32.dll", "SetFilePointer"))
+        {
+            char *procname = (char*)"UNKNOWN";
+            procname = drakvuf_get_process_name(drakvuf, injector->eprocess_base);
+            printf("[DuplicateHandle] [%s] No SetFilePointer\n", procname);
+            goto err;
+        }
 
         {
             // Remove stack arguments and home space from previous injection
@@ -752,6 +766,13 @@ static event_response_t getfileinformationbyhandle_cb(drakvuf_t drakvuf, drakvuf
             PRINT_DEBUG("[FILEDELETE] [GetFileInformationByHandle] File '%s', size is 0x%lx (CR3 0x%lx, TID %d).\n",
                         injector->f->files[info->proc_data.pid][injector->handle].c_str(), injector->file.size, info->regs->cr3, thread_id);
 
+            if (f->duplicate_va != drakvuf_exportsym_to_va(drakvuf, injector->eprocess_base, "kernel32.dll", "DuplicateHandle"))
+            {
+                char *procname = (char*)"UNKNOWN";
+                procname = drakvuf_get_process_name(drakvuf, injector->eprocess_base);
+                printf("[GetFileInformationByHandle] [%s] No DuplicateHandle\n", procname);
+                goto err;
+            }
             {
                 // Remove stack arguments and home space from previous injection
                 info->regs->rsp = injector->saved_regs.rsp;
@@ -976,6 +997,13 @@ static event_response_t ntqueryobject_cb(drakvuf_t drakvuf, drakvuf_trap_info_t*
         if ( 0 != type_file.compare(std::string((const char*)type_name->contents)) )
             goto handled;
 
+        if (f->getfileinfo_va != drakvuf_exportsym_to_va(drakvuf, injector->eprocess_base, "ntdll.dll", "GetFileInformationByHandle"))
+        {
+            char *procname = (char*)"UNKNOWN";
+            procname = drakvuf_get_process_name(drakvuf, injector->eprocess_base);
+            printf("[NtQueryObject] [%s] No GetFileInformationByHandle\n", procname);
+            goto err;
+        }
         {
             {
                 // Remove stack arguments and home space from previous injection
@@ -1110,6 +1138,13 @@ static event_response_t closehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* i
         goto err;
     }
 
+    if (f->queryobject_va != drakvuf_exportsym_to_va(drakvuf, injector->eprocess_base, "ntdll.dll", "NtQueryObject"))
+    {
+        char *procname = (char*)"UNKNOWN";
+        procname = drakvuf_get_process_name(drakvuf, injector->eprocess_base);
+        printf("[NtClose] [%s] No NtQueryObject\n", procname);
+        goto err;
+    }
     if ( !drakvuf_get_current_thread_id(drakvuf, info->vcpu, &injector->target_thread_id) ||
             !injector->target_thread_id )
     {
