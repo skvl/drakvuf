@@ -402,7 +402,7 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
             // Grow the stack
             info->regs->rsp = ctx.addr;
 
-            info->regs->rip = injector->ntreadfile_info.exec_func;
+            info->regs->rip = f->readfile_va;
 
             response = VMI_EVENT_RESPONSE_SET_REGISTERS;
 
@@ -475,6 +475,7 @@ done:
 static event_response_t setfilepointer_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
 {
     struct injector* injector = (struct injector*)info->trap->data;
+    filedelete2* f = (filedelete2*)info->trap->data;
 
     auto response = 0;
     uint32_t thread_id = 0;
@@ -494,18 +495,6 @@ static event_response_t setfilepointer_cb(drakvuf_t drakvuf, drakvuf_trap_info_t
 
     if ((uint32_t)info->regs->rax != 0xffffffff)
     {
-        const char* lib = "ntdll.dll";
-        const char* fun = "NtReadFile";
-
-        auto exec_func = drakvuf_exportsym_to_va(drakvuf, injector->eprocess_base, lib, fun);
-        if (!exec_func)
-        {
-            PRINT_DEBUG("[FILEDELETE] [SetFilePointer] Failed to get VA of '%s!%s'.\n", lib, fun);
-            goto err;
-        }
-        else
-            injector->ntreadfile_info.exec_func = exec_func;
-
         {
             // Remove stack arguments and home space from previous injection
             info->regs->rsp = injector->saved_regs.rsp;
@@ -581,7 +570,7 @@ static event_response_t setfilepointer_cb(drakvuf_t drakvuf, drakvuf_trap_info_t
             info->regs->rsp = ctx.addr;
         }
 
-        info->regs->rip = exec_func;
+        info->regs->rip = f->readfile_va;
 
         injector->bp->name = "NtReadFile ret";
         injector->bp->cb = readfile_cb;
@@ -616,6 +605,7 @@ done:
 static event_response_t duplicatehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
 {
     struct injector* injector = (struct injector*)info->trap->data;
+    filedelete2* f = (filedelete2*)info->trap->data;
 
     auto response = 0;
     uint32_t thread_id = 0;
@@ -646,16 +636,6 @@ static event_response_t duplicatehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_
         }
 
         PRINT_DEBUG("[FILEDELETE] [DuplicateHandle] Duplicate handle of %u is %u. (CR3 0x%lx, TID %d) (RAX 0x%lx)\n", injector->handle, injector->file.handle, info->regs->cr3, thread_id, info->regs->rax);
-
-        const char* lib = "kernel32.dll";
-        const char* fun = "SetFilePointer";
-
-        auto exec_func = drakvuf_exportsym_to_va(drakvuf, injector->eprocess_base, lib, fun);
-        if (!exec_func)
-        {
-            PRINT_DEBUG("[FILEDELETE] [DuplicateHandle] Failed to get VA of '%s!%s'.\n", lib, fun);
-            goto err;
-        }
 
         {
             // Remove stack arguments and home space from previous injection
@@ -698,7 +678,7 @@ static event_response_t duplicatehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_
             info->regs->rsp = ctx.addr;
         }
 
-        info->regs->rip = exec_func;
+        info->regs->rip = f->seek_va;
 
         injector->bp->name = "SetFilePointer ret";
         injector->bp->cb = setfilepointer_cb;
@@ -733,6 +713,7 @@ done:
 static event_response_t getfileinformationbyhandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
 {
     struct injector* injector = (struct injector*)info->trap->data;
+    filedelete2* f = (filedelete2*)info->trap->data;
 
     auto response = 0;
     uint32_t thread_id = 0;
@@ -770,16 +751,6 @@ static event_response_t getfileinformationbyhandle_cb(drakvuf_t drakvuf, drakvuf
         {
             PRINT_DEBUG("[FILEDELETE] [GetFileInformationByHandle] File '%s', size is 0x%lx (CR3 0x%lx, TID %d).\n",
                         injector->f->files[info->proc_data.pid][injector->handle].c_str(), injector->file.size, info->regs->cr3, thread_id);
-
-            const char* lib = "kernel32.dll";
-            const char* fun = "DuplicateHandle";
-
-            auto exec_func = drakvuf_exportsym_to_va(drakvuf, injector->eprocess_base, lib, fun);
-            if (!exec_func)
-            {
-                PRINT_DEBUG("[FILEDELETE] [GetFileInformationByHandle] Failed to get VA of '%s!%s'.\n", lib, fun);
-                goto err;
-            }
 
             {
                 // Remove stack arguments and home space from previous injection
@@ -849,7 +820,7 @@ static event_response_t getfileinformationbyhandle_cb(drakvuf_t drakvuf, drakvuf
                 info->regs->rsp = ctx.addr;
             }
 
-            info->regs->rip = exec_func;
+            info->regs->rip = f->duplicate_va;
 
             injector->bp->name = "DuplicateHandle ret";
             injector->bp->cb = duplicatehandle_cb;
@@ -886,6 +857,7 @@ done:
 static event_response_t ntqueryobject_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
 {
     struct injector* injector = (struct injector*)info->trap->data;
+    filedelete2* f = (filedelete2*)info->trap->data;
 
     auto response = 0;
     uint32_t thread_id = 0;
@@ -988,7 +960,7 @@ static event_response_t ntqueryobject_cb(drakvuf_t drakvuf, drakvuf_trap_info_t*
             info->regs->rsp = ctx.addr;
         }
 
-        info->regs->rip = injector->ntqueryobject_info.exec_func;
+        info->regs->rip = f->queryobject_va;
 
         response = VMI_EVENT_RESPONSE_SET_REGISTERS;
 
@@ -1005,16 +977,6 @@ static event_response_t ntqueryobject_cb(drakvuf_t drakvuf, drakvuf_trap_info_t*
             goto handled;
 
         {
-            const char* lib = "kernel32.dll";
-            const char* fun = "GetFileInformationByHandle";
-
-            auto exec_func = drakvuf_exportsym_to_va(drakvuf, injector->eprocess_base, lib, fun);
-            if (!exec_func)
-            {
-                PRINT_DEBUG("[FILEDELETE] [NtQueryObject] Failed to get VA of '%s!%s'.\n", lib, fun);
-                goto err;
-            }
-
             {
                 // Remove stack arguments and home space from previous injection
                 info->regs->rsp = injector->saved_regs.rsp;
@@ -1059,7 +1021,7 @@ static event_response_t ntqueryobject_cb(drakvuf_t drakvuf, drakvuf_trap_info_t*
                 info->regs->rsp = ctx.addr;
             }
 
-            info->regs->rip = exec_func;
+            info->regs->rip = f->getfileinfo_va;
 
             injector->bp->name = "GetFileInformationByHandle ret";
             injector->bp->cb = getfileinformationbyhandle_cb;
@@ -1104,9 +1066,6 @@ static event_response_t closehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* i
     auto response = 0;
     auto restore_regs = false;
     struct injector* injector = nullptr;
-    const char* lib = "ntdll.dll";
-    const char* fun = "NtQueryObject";
-    addr_t exec_func = 0;
 
     filedelete2* f = (filedelete2*)info->trap->data;
     vmi_instance_t vmi = drakvuf_lock_and_get_vmi(drakvuf);
@@ -1157,14 +1116,6 @@ static event_response_t closehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* i
         PRINT_DEBUG("[FILEDELETE] Failed to get Thread ID\n");
         goto err;
     }
-
-    exec_func = drakvuf_exportsym_to_va(drakvuf, injector->eprocess_base, lib, fun);
-    if (!exec_func)
-    {
-        //PRINT_DEBUG("[FILEDELETE] Failed to get address of %s!%s\n", lib, fun);
-        goto err;
-    }
-    injector->ntqueryobject_info.exec_func = exec_func;
 
     /*
      * Check if process/thread is being processed. If so skip it. Add it into
@@ -1277,7 +1228,7 @@ static event_response_t closehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* i
         goto err;
     }
 
-    info->regs->rip = exec_func;
+    info->regs->rip = f->queryobject_va;
 
     response = VMI_EVENT_RESPONSE_SET_REGISTERS;
 
@@ -1364,10 +1315,8 @@ done:
 static event_response_t cr3_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
 {
     auto response = 0;
-    addr_t exec_func = 0;
-    const char* lib = "ntdll.dll";
-    const char* fun = "NtClose";
     filedelete2* f = (filedelete2*)info->trap->data;
+    drakvuf_trap_t* bp = nullptr;
 
     auto eprocess_base = drakvuf_get_current_process(drakvuf, info->vcpu);
     if ( 0 == eprocess_base )
@@ -1377,26 +1326,44 @@ static event_response_t cr3_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
         goto err;
     }
 
-    exec_func = drakvuf_exportsym_to_va(drakvuf, eprocess_base, lib, fun);
-    if (!exec_func)
-    {
-        //PRINT_DEBUG("[FILEDELETE] Failed to get address of %s!%s\n", lib, fun);
+    f->close_va = drakvuf_exportsym_to_va(drakvuf, eprocess_base, "ntdll.dll", "NtClose");
+    if (!f->close_va)
         goto err;
-    }
+
+    f->readfile_va = drakvuf_exportsym_to_va(drakvuf, eprocess_base, "ntdll.dll", "NtReadFile");
+    if (!f->readfile_va)
+        goto err;
+
+    f->queryobject_va = drakvuf_exportsym_to_va(drakvuf, eprocess_base, "ntdll.dll", "NtQueryObject");
+    if (!f->queryobject_va)
+        goto err;
+
+    f->getfileinfo_va = drakvuf_exportsym_to_va(drakvuf, eprocess_base, "kernel32.dll", "GetFileInformationByHandle");
+    if (!f->getfileinfo_va)
+        goto err;
+
+    f->duplicate_va = drakvuf_exportsym_to_va(drakvuf, eprocess_base, "kernel32.dll", "DuplicateHandle");
+    if (!f->duplicate_va)
+        goto err;
+
+    f->seek_va = drakvuf_exportsym_to_va(drakvuf, eprocess_base, "kernel32.dll", "SetFilePointer");
+    if (!f->seek_va)
+        goto err;
 
     // Unsubscribe from the CR3 trap
     drakvuf_remove_trap(drakvuf, info->trap, (drakvuf_trap_free_t)free);
 
-    f->traps[0].type = BREAKPOINT;
-    f->traps[0].name = "NtClose";
-    f->traps[0].cb = closehandle_cb;
-    f->traps[0].data = info->trap->data;
-    f->traps[0].breakpoint.lookup_type = LOOKUP_DTB;
-    f->traps[0].breakpoint.dtb = info->regs->cr3;
-    f->traps[0].breakpoint.addr_type = ADDR_VA;
-    f->traps[0].breakpoint.addr = exec_func;
+    bp = (drakvuf_trap_t*)g_malloc0(sizeof(drakvuf_trap_t));
+    bp->type = BREAKPOINT;
+    bp->name = "NtClose";
+    bp->cb = closehandle_cb;
+    bp->data = info->trap->data;
+    bp->breakpoint.lookup_type = LOOKUP_DTB;
+    bp->breakpoint.dtb = info->regs->cr3;
+    bp->breakpoint.addr_type = ADDR_VA;
+    bp->breakpoint.addr = f->close_va;
 
-    if ( !drakvuf_add_trap(drakvuf, &f->traps[0]) )
+    if ( !drakvuf_add_trap(drakvuf, bp) )
     {
         fprintf(stderr, "Failed to trap return location of injected function call @ 0x%lx!\n",
                 f->traps[0].breakpoint.addr);

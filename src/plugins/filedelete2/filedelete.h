@@ -120,6 +120,13 @@ using file_name_t = std::string;
 class filedelete2: public plugin
 {
 public:
+    addr_t close_va;
+    addr_t readfile_va;
+    addr_t queryobject_va;
+    addr_t getfileinfo_va;
+    addr_t duplicate_va;
+    addr_t seek_va;
+
     drakvuf_trap_t traps[4] =
     {
         [0 ... 3] = {
