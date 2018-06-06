@@ -1353,6 +1353,88 @@ err:
     return response;
 }
 
+/*
+ * NTSTATUS ZwSetInformationFile(
+ *  HANDLE                 FileHandle,
+ *  PIO_STATUS_BLOCK       IoStatusBlock,
+ *  PVOID                  FileInformation,
+ *  ULONG                  Length,
+ *  FILE_INFORMATION_CLASS FileInformationClass
+ * );
+ *
+ * When FileInformationClass is FileDispositionInformation then FileInformation points to
+ * struct _FILE_DISPOSITION_INFORMATION {
+ *  BOOLEAN DeleteFile;
+ * }
+ */
+static event_response_t setinformation_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
+{
+  event_response_t response = 0;
+    filedelete2* f = (filedelete2*)info->trap->data;
+    vmi_instance_t vmi = drakvuf_lock_and_get_vmi(drakvuf);
+
+    access_context_t ctx;
+    ctx.translate_mechanism = VMI_TM_PROCESS_DTB;
+    ctx.dtb = info->regs->cr3;
+
+    uint32_t fileinfoclass = 0;
+    reg_t handle = 0, fileinfo = 0;
+
+    if (f->pm == VMI_PM_IA32E)
+    {
+        handle = info->regs->rcx;
+        fileinfo = info->regs->r8;
+
+        ctx.addr = info->regs->rsp + 5 * sizeof(addr_t); // addr of fileinfoclass
+        if ( VMI_FAILURE == vmi_read_32(vmi, &ctx, &fileinfoclass) )
+            goto done;
+    }
+    else
+    {
+        ctx.addr = info->regs->rsp + sizeof(uint32_t);
+        if ( VMI_FAILURE == vmi_read_32(vmi, &ctx, (uint32_t*) &handle) )
+            goto done;
+        ctx.addr += 2 * sizeof(uint32_t);
+        if ( VMI_FAILURE == vmi_read_32(vmi, &ctx, (uint32_t*) &fileinfo) )
+            goto done;
+        ctx.addr += 2 * sizeof(uint32_t);
+        if ( VMI_FAILURE == vmi_read_32(vmi, &ctx, &fileinfoclass) )
+            goto done;
+    }
+
+    if (fileinfoclass == FILE_DISPOSITION_INFORMATION)
+    {
+        uint8_t del = 0;
+        ctx.addr = fileinfo;
+        if ( VMI_FAILURE == vmi_read_8(vmi, &ctx, &del) )
+            goto done;
+
+        if (del)
+          {
+            printf("[FILEDELETE2] [NtSetInformationFile] Delete file 0x%lx: ", handle);
+
+            unicode_string_t* filename_us = nullptr;
+            filename_us = get_file_name(drakvuf, info, vmi, handle);
+            if (filename_us)
+              {
+                printf("%s\n", filename_us->contents);
+                f->files[info->proc_data.pid][handle] = std::string((const char*)filename_us->contents);
+              }
+            else
+              {
+                printf("FAILURE\n");
+                goto done;
+              }
+
+            response = start_readfile(drakvuf, info, vmi, handle);
+          }
+    }
+
+done:
+    drakvuf_release_vmi(drakvuf);
+    return response;
+}
+
 static event_response_t writefile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
 {
     filedelete2* f = (filedelete2*)info->trap->data;
@@ -1466,8 +1548,9 @@ filedelete2::filedelete2(drakvuf_t drakvuf, const void* config, output_format_t 
         throw -1;
 
     // Slot 0 is used for "ntdll!NtClose" trap
-    assert(sizeof(traps)/sizeof(traps[0]) > 1);
+    assert(sizeof(traps)/sizeof(traps[0]) > 2);
     register_trap(drakvuf, c->rekall_profile, "NtWriteFile", &traps[1], writefile_cb);
+    register_trap(drakvuf, c->rekall_profile, "NtSetInformationFile", &traps[2], setinformation_cb);
 
     this->offsets = (size_t*)malloc(sizeof(size_t)*__OFFSET_MAX);
 
