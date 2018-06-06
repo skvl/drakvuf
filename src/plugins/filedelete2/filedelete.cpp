@@ -1266,6 +1266,51 @@ err:
 }
 
 /*
+ * Drakvuf must be locked/unlocked in the caller
+ */
+static unicode_string_t* get_file_name(drakvuf_t drakvuf, drakvuf_trap_info_t* info, vmi_instance_t vmi, handle_t handle)
+{
+  filedelete2* f = (filedelete2*)info->trap->data;
+  addr_t eprocess_base = 0;
+  addr_t obj = 0;
+  uint8_t type = 0;
+  unicode_string_t* filename_us = nullptr;
+  addr_t file = 0;
+  addr_t filename = 0;
+  addr_t filetype = 0;
+  access_context_t ctx;
+
+  eprocess_base = drakvuf_get_current_process(drakvuf, info->vcpu);
+  if ( 0 == eprocess_base )
+      return nullptr;
+
+  obj = drakvuf_get_obj_by_handle(drakvuf, eprocess_base, handle);
+  if (!obj)
+    return nullptr;
+
+  file = obj + f->offsets[OBJECT_HEADER_BODY];
+  filename = file + f->offsets[FILE_OBJECT_FILENAME];
+  filetype = file + f->offsets[FILE_OBJECT_TYPE];
+
+  ctx.translate_mechanism = VMI_TM_PROCESS_DTB;
+  ctx.addr = filetype;
+  ctx.dtb = info->regs->cr3;
+
+  if (VMI_FAILURE == vmi_read_8(vmi, &ctx, &type))
+    return nullptr;
+
+  if (type != 5)
+    return nullptr;
+
+  filename_us = drakvuf_read_unicode(drakvuf, info, filename);
+
+  if (!filename_us)
+    return nullptr;
+
+  return filename_us;
+}
+
+/*
  * Intercept all handles close and filter file handles.
  *
  * The main difficulty is that this handler intercepts not only CloseHandle()
@@ -1313,14 +1358,8 @@ static event_response_t writefile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* inf
     filedelete2* f = (filedelete2*)info->trap->data;
     vmi_instance_t vmi = drakvuf_lock_and_get_vmi(drakvuf);
 
-    handle_t handle = 0;
-    addr_t eprocess_base = 0;
-    addr_t obj = 0;
-    uint8_t type = 0;
     unicode_string_t* filename_us = nullptr;
-    addr_t file = 0;
-    addr_t filename = 0;
-    addr_t filetype = 0;
+    handle_t handle = 0;
     access_context_t ctx;
 
     if (f->pm == VMI_PM_IA32E)
@@ -1336,38 +1375,9 @@ static event_response_t writefile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* inf
             goto done;
     }
 
-    eprocess_base = drakvuf_get_current_process(drakvuf, info->vcpu);
-    if ( 0 == eprocess_base )
-    {
-        PRINT_DEBUG("[FILEDELETE] [NtWriteFile] Failed to get process base on vCPU 0x%d\n",
-                    info->vcpu);
-        goto done;
-    }
-
-    obj = drakvuf_get_obj_by_handle(drakvuf, eprocess_base, handle);
-    if (!obj)
-        goto done;
-
-    file = obj + f->offsets[OBJECT_HEADER_BODY];
-    filename = file + f->offsets[FILE_OBJECT_FILENAME];
-    filetype = file + f->offsets[FILE_OBJECT_TYPE];
-
-    ctx.translate_mechanism = VMI_TM_PROCESS_DTB;
-    ctx.addr = filetype;
-    ctx.dtb = info->regs->cr3;
-
-    if (VMI_FAILURE == vmi_read_8(vmi, &ctx, &type))
-        goto done;
-
-    if (type != 5)
-        goto done;
-
-    filename_us = drakvuf_read_unicode(drakvuf, info, filename);
-
-    if (!filename_us)
-        goto done;
-
-    f->files[info->proc_data.pid][handle] = std::string((const char*)filename_us->contents);
+    filename_us = get_file_name(drakvuf, info, vmi, handle);
+    if (filename_us)
+      f->files[info->proc_data.pid][handle] = std::string((const char*)filename_us->contents);
 
 done:
     drakvuf_release_vmi(drakvuf);
