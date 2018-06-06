@@ -1093,46 +1093,18 @@ done:
 }
 
 /*
- * Intercept all handles close and filter file handles.
- *
- * The main difficulty is that this handler intercepts not only CloseHandle()
- * calls but returns from injected functions. To distinguish such situations
- * we use the regestry of processes/threads being processed.
+ * Drakvuf must be locked/unlocked in the caller
  */
-static event_response_t closehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
+static event_response_t start_readfile(drakvuf_t drakvuf, drakvuf_trap_info_t* info, vmi_instance_t vmi, handle_t handle)
 {
-    auto response = 0;
-    auto restore_regs = false;
-    struct injector* injector = nullptr;
-    const char* lib = "ntdll.dll";
-    const char* fun = "NtQueryObject";
-    addr_t exec_func = 0;
+  auto response = 0;
+  auto restore_regs = false;
+  struct injector* injector = nullptr;
+  const char* lib = "ntdll.dll";
+  const char* fun = "NtQueryObject";
+  addr_t exec_func = 0;
 
-    filedelete2* f = (filedelete2*)info->trap->data;
-    vmi_instance_t vmi = drakvuf_lock_and_get_vmi(drakvuf);
-
-    access_context_t ctx;
-    reg_t handle = 0;
-
-    if (f->pm == VMI_PM_IA32E)
-    {
-        handle = info->regs->rcx;
-    }
-    else
-    {
-        ctx.translate_mechanism = VMI_TM_PROCESS_DTB;
-        ctx.dtb = info->regs->cr3;
-        ctx.addr = info->regs->rsp + sizeof(uint32_t);
-        if ( VMI_FAILURE == vmi_read_32(vmi, &ctx, (uint32_t*) &handle) )
-            goto err;
-    }
-
-    /*
-     * Check if closing handle have been changed with NtWriteFile
-     */
-    if (f->files[info->proc_data.pid][handle].empty())
-        goto err;
-
+  filedelete2* f = (filedelete2*)info->trap->data;
 
     injector = new struct injector;
     injector->f = f;
@@ -1281,7 +1253,7 @@ static event_response_t closehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* i
 
     response = VMI_EVENT_RESPONSE_SET_REGISTERS;
 
-    goto done;
+    return response;
 
 err:
     if (restore_regs)
@@ -1290,7 +1262,48 @@ err:
     if (injector)
         delete injector;
 
-done:
+    return response;
+}
+
+/*
+ * Intercept all handles close and filter file handles.
+ *
+ * The main difficulty is that this handler intercepts not only CloseHandle()
+ * calls but returns from injected functions. To distinguish such situations
+ * we use the regestry of processes/threads being processed.
+ */
+static event_response_t closehandle_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
+{
+    auto response = 0;
+    filedelete2* f = (filedelete2*)info->trap->data;
+
+    vmi_instance_t vmi = drakvuf_lock_and_get_vmi(drakvuf);
+
+    access_context_t ctx;
+    reg_t handle = 0;
+
+    if (f->pm == VMI_PM_IA32E)
+    {
+        handle = info->regs->rcx;
+    }
+    else
+    {
+        ctx.translate_mechanism = VMI_TM_PROCESS_DTB;
+        ctx.dtb = info->regs->cr3;
+        ctx.addr = info->regs->rsp + sizeof(uint32_t);
+        if ( VMI_FAILURE == vmi_read_32(vmi, &ctx, (uint32_t*) &handle) )
+            goto err;
+    }
+
+    /*
+     * Check if closing handle have been changed with NtWriteFile
+     */
+    if (f->files[info->proc_data.pid][handle].empty())
+        goto err;
+
+    response = start_readfile(drakvuf, info, vmi, handle);
+
+err:
     drakvuf_release_vmi(drakvuf);
     return response;
 }
