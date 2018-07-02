@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
  *                                                                         *
- * DRAKVUF (C) 2014-2016 Tamas K Lengyel.                                  *
+ * DRAKVUF (C) 2014-2017 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
  * This program is free software; you may redistribute and/or modify it    *
  * under the terms of the GNU General Public License as published by the   *
@@ -102,130 +102,54 @@
  *                                                                         *
  ***************************************************************************/
 
-#include <stdarg.h>
-#include "plugins.h"
-#include "syscalls/syscalls.h"
-#include "poolmon/poolmon.h"
-#include "filetracer/filetracer.h"
-#include "filedelete/filedelete.h"
-#include "filedelete2/filedelete.h"
-#include "objmon/objmon.h"
-#include "exmon/exmon.h"
-#include "ssdtmon/ssdtmon.h"
-#include "debugmon/debugmon.h"
-#include "cpuidmon/cpuidmon.h"
-#include "socketmon/socketmon.h"
-#include "regmon/regmon.h"
-#include "procmon/procmon.h"
+#ifndef FILEDELETE2_H
+#define FILEDELETE2_H
 
-drakvuf_plugins::drakvuf_plugins(const drakvuf_t drakvuf, output_format_t output, os_t os)
-{
-    this->drakvuf = drakvuf;
-    this->output = output;
-    this->os = os;
-}
+#include "plugins/private.h"
+#include "plugins/plugins.h"
 
-drakvuf_plugins::~drakvuf_plugins()
-{
-    int i;
-    for (i=0; i<__DRAKVUF_PLUGIN_LIST_MAX; i++)
-        if ( this->plugins[i] )
-            delete this->plugins[i];
-}
+#include <map>
+#include <set>
+#include <utility>
+#include <cstdint>
 
-int drakvuf_plugins::start(const drakvuf_plugin_t plugin_id,
-                           const void* config)
+using handle_t = reg_t;
+using handled_t = bool;
+using file_name_t = std::string;
+
+class filedelete2: public plugin
 {
-    if ( __DRAKVUF_PLUGIN_LIST_MAX != 0 &&
-            plugin_id < __DRAKVUF_PLUGIN_LIST_MAX)
+public:
+    drakvuf_trap_t traps[4] =
     {
-        PRINT_DEBUG("Starting plugin %s\n", drakvuf_plugin_names[plugin_id]);
-
-        if ( !drakvuf_plugin_os_support[plugin_id][this->os] )
-            return 0;
-
-        try
-        {
-            switch (plugin_id)
-            {
-#ifdef ENABLE_PLUGIN_SYSCALLS
-                case PLUGIN_SYSCALLS:
-                    this->plugins[plugin_id] = new syscalls(this->drakvuf, config, this->output);
-                    break;
-#endif
-#ifdef ENABLE_PLUGIN_POOLMON
-                case PLUGIN_POOLMON:
-                    this->plugins[plugin_id] = new poolmon(this->drakvuf, config, this->output);
-                    break;
-#endif
-#ifdef ENABLE_PLUGIN_FILETRACER
-                case PLUGIN_FILETRACER:
-                    this->plugins[plugin_id] = new filetracer(this->drakvuf, config, this->output);
-                    break;
-#endif
-#ifdef ENABLE_PLUGIN_FILEDELETE
-                case PLUGIN_FILEDELETE:
-                    this->plugins[plugin_id] = new filedelete(this->drakvuf, config, this->output);
-                    break;
-#endif
-#ifdef ENABLE_PLUGIN_FILEDELETE2
-                case PLUGIN_FILEDELETE2:
-                    this->plugins[plugin_id] = new filedelete2(this->drakvuf, config, this->output);
-                    break;
-#endif
-#ifdef ENABLE_PLUGIN_OBJMON
-                case PLUGIN_OBJMON:
-                    this->plugins[plugin_id] = new objmon(this->drakvuf, config, this->output);
-                    break;
-#endif
-#ifdef ENABLE_PLUGIN_EXMON
-                case PLUGIN_EXMON:
-                    this->plugins[plugin_id] = new exmon(this->drakvuf, config, this->output);
-                    break;
-#endif
-#ifdef ENABLE_PLUGIN_SSDTMON
-                case PLUGIN_SSDTMON:
-                    this->plugins[plugin_id] = new ssdtmon(this->drakvuf, config, this->output);
-                    break;
-#endif
-#ifdef ENABLE_PLUGIN_DEBUGMON
-                case PLUGIN_DEBUGMON:
-                    this->plugins[plugin_id] = new debugmon(this->drakvuf, config, this->output);
-                    break;
-#endif
-#ifdef ENABLE_PLUGIN_CPUIDMON
-                case PLUGIN_CPUIDMON:
-                    this->plugins[plugin_id] = new cpuidmon(this->drakvuf, config, this->output);
-                    break;
-#endif
-#ifdef ENABLE_PLUGIN_SOCKETMON
-                case PLUGIN_SOCKETMON:
-                    this->plugins[plugin_id] = new socketmon(this->drakvuf, config, this->output);
-                    break;
-#endif
-#ifdef ENABLE_PLUGIN_REGMON
-                case PLUGIN_REGMON:
-                    this->plugins[plugin_id] = new regmon(this->drakvuf, config, this->output);
-                    break;
-#endif
-#ifdef ENABLE_PLUGIN_PROCMON
-                case PLUGIN_PROCMON:
-                    this->plugins[plugin_id] = new procmon(this->drakvuf, config, this->output);
-                    break;
-#endif
-                default:
-                    break;
-            }
+        [0 ... 3] = {
+            .breakpoint.lookup_type = LOOKUP_PID,
+            .breakpoint.pid = 4,
+            .breakpoint.addr_type = ADDR_RVA,
+            .breakpoint.module = "ntoskrnl.exe",
+            .type = BREAKPOINT,
+            .data = (void*)this
         }
-        catch (int e)
-        {
-            fprintf(stderr, "Plugin %s startup failed!\n", drakvuf_plugin_names[plugin_id]);
-            return -1;
-        }
+    };
+    addr_t queryobject_va;
+    addr_t readfile_va;
+    size_t* offsets;
 
-        PRINT_DEBUG("Starting plugin %s finished\n", drakvuf_plugin_names[plugin_id]);
-        return 1;
-    }
+    const char* dump_folder;
+    page_mode_t pm;
+    uint32_t domid;
+    output_format_t format;
 
-    return 0;
-}
+    // TODO Use `vmi_pid_t` instead
+    // TODO Use named types
+    // TODO Rename to `targets`
+    // Save info about target processes/threads which control flow have been
+    // influenced by injection
+    std::map<std::pair<addr_t, uint32_t>, handled_t> closing_handles;
+    std::map<vmi_pid_t, std::map<handle_t, file_name_t>> files;
+
+    filedelete2(drakvuf_t drakvuf, const void* config, output_format_t output);
+    ~filedelete2();
+};
+
+#endif

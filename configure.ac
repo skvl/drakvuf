@@ -155,6 +155,16 @@ if test x$plugin_filedelete = xyes; then
   AC_DEFINE_UNQUOTED(ENABLE_PLUGIN_FILEDELETE, 1, "")
 fi
 
+AC_ARG_ENABLE([plugin_filedelete2],
+[AS_HELP_STRING([--disable-plugin-filedelete2],
+[Enable the file delete catching plugin based on read file injection @<:@yes@:>@])],
+[plugin_filedelete2="$enableval"],
+[plugin_filedelete2="no"])
+AM_CONDITIONAL([PLUGIN_FILEDELETE2], [test x$plugin_filedelete2 = xyes])
+if test x$plugin_filedelete2 = xyes; then
+AC_DEFINE_UNQUOTED(ENABLE_PLUGIN_FILEDELETE2, 1, "")
+fi
+
 AC_ARG_ENABLE([plugin_objmon],
   [AS_HELP_STRING([--disable-plugin-objmon],
     [Enable the ObCreateObject watching plugin @<:@yes@:>@])],
@@ -395,6 +405,7 @@ Syscalls:   $plugin_syscalls
 Poolmon:    $plugin_poolmon
 Filetracer: $plugin_filetracer
 Filedelete: $plugin_filedelete
+Filedelete2:$plugin_filedelete2
 Objmon:     $plugin_objmon
 Exmon:      $plugin_exmon
 SSDTmon:    $plugin_ssdtmon
