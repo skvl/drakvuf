@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
  *                                                                         *
- * DRAKVUF (C) 2014-2016 Tamas K Lengyel.                                  *
+ * DRAKVUF (C) 2014-2017 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
  * This program is free software; you may redistribute and/or modify it    *
  * under the terms of the GNU General Public License as published by the   *
@@ -102,130 +102,54 @@
  *                                                                         *
  ***************************************************************************/
 
-#ifndef DRAKVUF_PLUGINS_H
-#define DRAKVUF_PLUGINS_H
+#ifndef FILEDELETE2_H
+#define FILEDELETE2_H
 
-#include <config.h>
-#include <stdlib.h>
-#include <inttypes.h>
-#include <sys/time.h>
-#include <libdrakvuf/libdrakvuf.h>
+#include "plugins/private.h"
+#include "plugins/plugins.h"
 
-/***************************************************************************/
+#include <map>
+#include <set>
+#include <utility>
+#include <cstdint>
 
-/* Plugin-specific configuration input */
-struct filedelete_config
-{
-    const char* rekall_profile;
-    const char* dump_folder;
-    bool dump_modified_files;
-};
-struct filedelete2_config
-{
-    const char* rekall_profile;
-    const char* dump_folder;
-    bool dump_modified_files;
-};
-struct socketmon_config
-{
-    const char* rekall_profile;
-    const char* tcpip_profile;
-};
-struct syscalls_config
-{
-    const char* rekall_profile;
-    const char* syscalls_filter_file;
-};
+using handle_t = reg_t;
+using handled_t = bool;
+using file_name_t = std::string;
 
-/***************************************************************************/
-
-typedef enum drakvuf_plugin
-{
-    PLUGIN_SYSCALLS,
-    PLUGIN_POOLMON,
-    PLUGIN_FILETRACER,
-    PLUGIN_FILEDELETE,
-    PLUGIN_FILEDELETE2,
-    PLUGIN_OBJMON,
-    PLUGIN_EXMON,
-    PLUGIN_SSDTMON,
-    PLUGIN_DEBUGMON,
-    PLUGIN_CPUIDMON,
-    PLUGIN_SOCKETMON,
-    PLUGIN_REGMON,
-    PLUGIN_PROCMON,
-    __DRAKVUF_PLUGIN_LIST_MAX
-} drakvuf_plugin_t;
-
-static const char* drakvuf_plugin_names[] =
-{
-    [PLUGIN_SYSCALLS] = "syscalls",
-    [PLUGIN_POOLMON] = "poolmon",
-    [PLUGIN_FILETRACER] = "filetracer",
-    [PLUGIN_FILEDELETE] = "filedelete",
-    [PLUGIN_FILEDELETE2] = "filedelete2",
-    [PLUGIN_OBJMON] = "objmon",
-    [PLUGIN_EXMON] = "exmon",
-    [PLUGIN_SSDTMON] = "ssdtmon",
-    [PLUGIN_DEBUGMON] = "debugmon",
-    [PLUGIN_CPUIDMON] = "cpuidmon",
-    [PLUGIN_SOCKETMON] = "socketmon",
-    [PLUGIN_REGMON] = "regmon",
-    [PLUGIN_PROCMON] = "procmon",
-};
-
-static const bool drakvuf_plugin_os_support[__DRAKVUF_PLUGIN_LIST_MAX][VMI_OS_WINDOWS+1] =
-{
-    [PLUGIN_SYSCALLS]   = { [VMI_OS_WINDOWS] = 1, [VMI_OS_LINUX] = 1 },
-    [PLUGIN_POOLMON]    = { [VMI_OS_WINDOWS] = 1, [VMI_OS_LINUX] = 0 },
-    [PLUGIN_FILETRACER] = { [VMI_OS_WINDOWS] = 1, [VMI_OS_LINUX] = 0 },
-    [PLUGIN_FILEDELETE] = { [VMI_OS_WINDOWS] = 1, [VMI_OS_LINUX] = 0 },
-    [PLUGIN_FILEDELETE2] = { [VMI_OS_WINDOWS] = 1, [VMI_OS_LINUX] = 0 },
-    [PLUGIN_OBJMON]     = { [VMI_OS_WINDOWS] = 1, [VMI_OS_LINUX] = 0 },
-    [PLUGIN_EXMON]      = { [VMI_OS_WINDOWS] = 1, [VMI_OS_LINUX] = 0 },
-    [PLUGIN_SSDTMON]    = { [VMI_OS_WINDOWS] = 1, [VMI_OS_LINUX] = 0 },
-    [PLUGIN_DEBUGMON]   = { [VMI_OS_WINDOWS] = 1, [VMI_OS_LINUX] = 1 },
-    [PLUGIN_CPUIDMON]   = { [VMI_OS_WINDOWS] = 1, [VMI_OS_LINUX] = 1 },
-    [PLUGIN_SOCKETMON]  = { [VMI_OS_WINDOWS] = 1, [VMI_OS_LINUX] = 0 },
-    [PLUGIN_REGMON]     = { [VMI_OS_WINDOWS] = 1, [VMI_OS_LINUX] = 0 },
-    [PLUGIN_PROCMON]    = { [VMI_OS_WINDOWS] = 1, [VMI_OS_LINUX] = 0 },
-};
-
-class plugin
+class filedelete2: public plugin
 {
 public:
-    virtual ~plugin() {};
-};
-
-class drakvuf_plugins
-{
-private:
-    drakvuf_t drakvuf;
-    output_format_t output;
-    os_t os;
-    plugin* plugins[__DRAKVUF_PLUGIN_LIST_MAX] = { [0 ... __DRAKVUF_PLUGIN_LIST_MAX-1] = NULL };
-
-public:
-    drakvuf_plugins(drakvuf_t drakvuf, output_format_t output, os_t os);
-    ~drakvuf_plugins();
-    int start(drakvuf_plugin_t plugin, const void* config);
-};
-
-/***************************************************************************/
-
-struct vmi_lock_guard
-{
-    vmi_lock_guard(drakvuf_t drakvuf_) : drakvuf(drakvuf_), vmi( drakvuf_lock_and_get_vmi(this->drakvuf) )
+    drakvuf_trap_t traps[4] =
     {
-    }
+        [0 ... 3] = {
+            .breakpoint.lookup_type = LOOKUP_PID,
+            .breakpoint.pid = 4,
+            .breakpoint.addr_type = ADDR_RVA,
+            .breakpoint.module = "ntoskrnl.exe",
+            .type = BREAKPOINT,
+            .data = (void*)this
+        }
+    };
+    addr_t queryobject_va;
+    addr_t readfile_va;
+    size_t* offsets;
 
-    ~vmi_lock_guard()
-    {
-        drakvuf_release_vmi(this->drakvuf);
-    }
+    const char* dump_folder;
+    page_mode_t pm;
+    uint32_t domid;
+    output_format_t format;
 
-    drakvuf_t drakvuf;
-    vmi_instance_t vmi;
+    // TODO Use `vmi_pid_t` instead
+    // TODO Use named types
+    // TODO Rename to `targets`
+    // Save info about target processes/threads which control flow have been
+    // influenced by injection
+    std::map<std::pair<addr_t, uint32_t>, handled_t> closing_handles;
+    std::map<vmi_pid_t, std::map<handle_t, file_name_t>> files;
+
+    filedelete2(drakvuf_t drakvuf, const void* config, output_format_t output);
+    ~filedelete2();
 };
 
 #endif

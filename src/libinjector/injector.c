@@ -684,6 +684,8 @@ event_response_t mem_callback(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
 
     memcpy(&injector->saved_regs, info->regs, sizeof(x86_registers_t));
 
+    // TODO Error later could corrupt VM's RSP register
+    // after `info->regs->rsp = addr` if error occure then RSP not restored?
     if (!pass_inputs(injector, info))
     {
         PRINT_DEBUG("Failed to setup stack for passing inputs!\n");

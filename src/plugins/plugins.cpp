@@ -108,6 +108,7 @@
 #include "poolmon/poolmon.h"
 #include "filetracer/filetracer.h"
 #include "filedelete/filedelete.h"
+#include "filedelete2/filedelete.h"
 #include "objmon/objmon.h"
 #include "exmon/exmon.h"
 #include "ssdtmon/ssdtmon.h"
@@ -165,6 +166,11 @@ int drakvuf_plugins::start(const drakvuf_plugin_t plugin_id,
 #ifdef ENABLE_PLUGIN_FILEDELETE
                 case PLUGIN_FILEDELETE:
                     this->plugins[plugin_id] = new filedelete(this->drakvuf, config, this->output);
+                    break;
+#endif
+#ifdef ENABLE_PLUGIN_FILEDELETE2
+                case PLUGIN_FILEDELETE2:
+                    this->plugins[plugin_id] = new filedelete2(this->drakvuf, config, this->output);
                     break;
 #endif
 #ifdef ENABLE_PLUGIN_OBJMON
