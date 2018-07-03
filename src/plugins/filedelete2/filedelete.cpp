@@ -211,6 +211,7 @@ struct injector
             size_t bytes_read;
             size_t size;
             addr_t out;
+            addr_t io_status_block;
         } ntreadfile_info;
     };
 
@@ -232,6 +233,12 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
         .dtb = info->regs->cr3,
     };
 
+    struct
+    {
+      uint64_t dummy;
+      uint64_t info;
+    } io_status_block = { 0 };
+
     vmi_instance_t vmi = drakvuf_lock_and_get_vmi(drakvuf);
 
     if (info->regs->cr3 != injector->target_cr3)
@@ -242,6 +249,13 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
         goto done;
 
     if ( !info->regs->rax )
+    {
+        ctx.addr = injector->ntreadfile_info.io_status_block;
+        if ((VMI_FAILURE == vmi_read(vmi, &ctx, 0x10, &io_status_block, NULL)))
+            goto err;
+    }
+
+    if ( !info->regs->rax)
     {
         static uint64_t idx = 0;
         char* file = NULL;
@@ -288,7 +302,6 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
 
         injector->ntreadfile_info.bytes_read += injector->ntreadfile_info.size;
 
-        if (!info->regs->rax)
         {
             // Remove stack arguments and home space from previous injection
             info->regs->rsp = injector->saved_regs.rsp;
@@ -303,8 +316,8 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
 
             uint64_t null64 = 0;
 
-            ctx.addr -= 16;
-            auto pio_status_block = ctx.addr;
+            ctx.addr -= 0x10;
+            injector->ntreadfile_info.io_status_block = ctx.addr;
 
             ctx.addr -= injector->ntreadfile_info.size;
             injector->ntreadfile_info.out = ctx.addr;
@@ -335,7 +348,7 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
 
             //p5
             ctx.addr -= 8;
-            if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &pio_status_block))
+            if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &injector->ntreadfile_info.io_status_block))
                 goto err;
 
             //p1
@@ -461,8 +474,8 @@ static event_response_t queryobject_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* i
 
             uint64_t null64 = 0;
 
-            ctx.addr -= 0x30UL;
-            auto pio_status_block = ctx.addr;
+            ctx.addr -= 0x10UL;
+            injector->ntreadfile_info.io_status_block = ctx.addr;
 
             ctx.addr -= injector->ntreadfile_info.size;
             injector->ntreadfile_info.out = ctx.addr;
@@ -493,7 +506,7 @@ static event_response_t queryobject_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* i
 
             //p5
             ctx.addr -= 8;
-            if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &pio_status_block))
+            if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &injector->ntreadfile_info.io_status_block))
                 goto err;
 
             //p1
