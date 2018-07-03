@@ -209,7 +209,6 @@ struct injector
         struct
         {
             size_t bytes_read;
-            size_t size;
             addr_t out;
             addr_t io_status_block;
         } ntreadfile_info;
@@ -223,6 +222,8 @@ struct IO_STATUS_BLOCK
   uint64_t dummy;
   uint64_t info;
 } __attribute__((packed));
+
+const uint64_t BYTES_TO_READ = 0x4000UL;
 
 static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
 {
@@ -284,8 +285,10 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
         free(file);
 
         ctx.addr = injector->ntreadfile_info.out;
-        void* buffer = g_malloc0(injector->ntreadfile_info.size);
-        if ((VMI_FAILURE == vmi_read(vmi, &ctx, injector->ntreadfile_info.size, buffer, NULL)))
+        void* buffer = g_malloc0(io_status_block.info);
+        auto status = vmi_read(vmi, &ctx, io_status_block.info, buffer, NULL);
+        g_free(buffer);
+        if ((VMI_FAILURE == status))
             goto err;
 
         if ( asprintf(&file, "%s/file.%06lu", f->dump_folder, idx) < 0 )
@@ -298,12 +301,13 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
             goto err;
         }
 
-        fwrite(buffer, 1, injector->ntreadfile_info.size, fp);
+        fwrite(buffer, 1, io_status_block.info, fp);
         fclose(fp);
         free(file);
 
-        injector->ntreadfile_info.bytes_read += injector->ntreadfile_info.size;
+        injector->ntreadfile_info.bytes_read += io_status_block.info;
 
+        if (BYTES_TO_READ == io_status_block.info)
         {
             // Remove stack arguments and home space from previous injection
             info->regs->rsp = injector->saved_regs.rsp;
@@ -317,7 +321,6 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
             }
 
             struct argument args[9] = { {0} };
-            const uint64_t BYTES_TO_READ = 0x4000UL;
             struct _LARGE_INTEGER {
               uint64_t QuadPart;
             } byte_offset = { .QuadPart = injector->ntreadfile_info.bytes_read };
@@ -330,8 +333,8 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
             init_argument(0, &args[2], ARGUMENT_INT, sizeof(uint64_t), (void*)null64);
             init_argument(0, &args[3], ARGUMENT_INT, sizeof(uint64_t), (void*)null64);
             init_argument(0, &args[4], ARGUMENT_STRUCT, sizeof(struct IO_STATUS_BLOCK), (void*)&io_status_block);
-            init_argument(0, &args[5], ARGUMENT_STRUCT, injector->ntreadfile_info.size, (void*)buffer);
-            init_argument(0, &args[6], ARGUMENT_INT, sizeof(uint64_t), (void*)injector->ntreadfile_info.size);
+            init_argument(0, &args[5], ARGUMENT_STRUCT, BYTES_TO_READ, (void*)buffer);
+            init_argument(0, &args[6], ARGUMENT_INT, sizeof(uint64_t), (void*)BYTES_TO_READ);
             init_argument(0, &args[7], ARGUMENT_STRUCT, sizeof(byte_offset), (void*)&byte_offset);
             init_argument(0, &args[8], ARGUMENT_INT, sizeof(uint64_t), (void*)null64);
 
@@ -437,7 +440,6 @@ static event_response_t queryobject_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* i
             }
 
             struct argument args[9] = { {0} };
-            const uint64_t BYTES_TO_READ = 0x4000UL;
             const struct IO_STATUS_BLOCK io_status_block = { 0 };
             const uint8_t buffer[BYTES_TO_READ] = { 0 };
             uint64_t null64 = 0;
@@ -447,15 +449,14 @@ static event_response_t queryobject_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* i
             init_argument(0, &args[2], ARGUMENT_INT, sizeof(uint64_t), (void*)null64);
             init_argument(0, &args[3], ARGUMENT_INT, sizeof(uint64_t), (void*)null64);
             init_argument(0, &args[4], ARGUMENT_STRUCT, sizeof(struct IO_STATUS_BLOCK), (void*)&io_status_block);
-            init_argument(0, &args[5], ARGUMENT_STRUCT, injector->ntreadfile_info.size, (void*)buffer);
-            init_argument(0, &args[6], ARGUMENT_INT, sizeof(uint64_t), (void*)injector->ntreadfile_info.size);
+            init_argument(0, &args[5], ARGUMENT_STRUCT, BYTES_TO_READ, (void*)buffer);
+            init_argument(0, &args[6], ARGUMENT_INT, sizeof(uint64_t), (void*)BYTES_TO_READ);
             init_argument(0, &args[7], ARGUMENT_INT, sizeof(uint64_t), (void*)null64);
             init_argument(0, &args[8], ARGUMENT_INT, sizeof(uint64_t), (void*)null64);
 
             if ( !setup_stack_64(vmi, info, &ctx, args, 9) )
               goto err;
 
-            injector->ntreadfile_info.size = BYTES_TO_READ;
             injector->ntreadfile_info.bytes_read = 0UL;
             injector->ntreadfile_info.out = args[5].data_on_stack;
             injector->ntreadfile_info.io_status_block = args[4].data_on_stack;
