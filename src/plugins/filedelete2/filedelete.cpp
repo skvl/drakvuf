@@ -219,6 +219,12 @@ struct injector
 
 const uint64_t BYTES_TO_READ = 0x4000;
 
+struct IO_STATUS_BLOCK
+{
+  uint64_t dummy;
+  uint64_t info;
+} __attribute__((packed));
+
 static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
 {
     struct injector* injector = (struct injector*)info->trap->data;
@@ -234,11 +240,7 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
         .dtb = info->regs->cr3,
     };
 
-    struct
-    {
-      uint64_t dummy;
-      uint64_t info;
-    } io_status_block = { 0 };
+    struct IO_STATUS_BLOCK io_status_block = { 0 };
 
     vmi_instance_t vmi = drakvuf_lock_and_get_vmi(drakvuf);
 
@@ -252,7 +254,7 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
     if ( !info->regs->rax )
     {
         ctx.addr = injector->ntreadfile_info.io_status_block;
-        if ((VMI_FAILURE == vmi_read(vmi, &ctx, 0x10, &io_status_block, NULL)))
+        if ((VMI_FAILURE == vmi_read(vmi, &ctx, sizeof(struct IO_STATUS_BLOCK), &io_status_block, NULL)))
             goto err;
     }
 
@@ -283,8 +285,9 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
         free(file);
 
         ctx.addr = injector->ntreadfile_info.out;
-        void* buffer = g_malloc0(BYTES_TO_READ);
-        if ((VMI_FAILURE == vmi_read(vmi, &ctx, BYTES_TO_READ, buffer, NULL)))
+        void* buffer = g_malloc0(io_status_block.info);
+        auto status = vmi_read(vmi, &ctx, io_status_block.info, buffer, NULL);
+        if ((VMI_FAILURE == status))
             goto err;
 
         if ( asprintf(&file, "%s/file.%06lu", f->dump_folder, idx) < 0 )
@@ -297,12 +300,14 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
             goto err;
         }
 
-        fwrite(buffer, 1, BYTES_TO_READ, fp);
+        fwrite(buffer, 1, io_status_block.info, fp);
         fclose(fp);
         free(file);
+        g_free(buffer);
 
-        injector->ntreadfile_info.bytes_read += BYTES_TO_READ;
+        injector->ntreadfile_info.bytes_read += io_status_block.info;
 
+        if (BYTES_TO_READ == io_status_block.info)
         {
             // Remove stack arguments and home space from previous injection
             info->regs->rsp = injector->saved_regs.rsp;
@@ -317,7 +322,7 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
 
             uint64_t null64 = 0;
 
-            ctx.addr -= 0x10;
+            ctx.addr -= sizeof(struct IO_STATUS_BLOCK);
             injector->ntreadfile_info.io_status_block = ctx.addr;
 
             ctx.addr -= BYTES_TO_READ;
@@ -473,7 +478,7 @@ static event_response_t queryobject_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* i
 
             uint64_t null64 = 0;
 
-            ctx.addr -= 0x10UL;
+            ctx.addr -= sizeof(struct IO_STATUS_BLOCK);
             injector->ntreadfile_info.io_status_block = ctx.addr;
 
             ctx.addr -= BYTES_TO_READ;
