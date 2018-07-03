@@ -190,7 +190,7 @@ struct injector
     filedelete2* f;
     bool is32bit;
 
-    uint32_t handle;
+    handle_t handle;
 
     reg_t target_cr3;
     uint32_t target_thread_id;
@@ -218,6 +218,12 @@ struct injector
     drakvuf_trap_t* bp;
 };
 
+struct IO_STATUS_BLOCK
+{
+  uint64_t dummy;
+  uint64_t info;
+} __attribute__((packed));
+
 static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
 {
     struct injector* injector = (struct injector*)info->trap->data;
@@ -233,11 +239,7 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
         .dtb = info->regs->cr3,
     };
 
-    struct
-    {
-      uint64_t dummy;
-      uint64_t info;
-    } io_status_block = { 0 };
+    struct IO_STATUS_BLOCK io_status_block = { 0 };
 
     vmi_instance_t vmi = drakvuf_lock_and_get_vmi(drakvuf);
 
@@ -251,7 +253,7 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
     if ( !info->regs->rax )
     {
         ctx.addr = injector->ntreadfile_info.io_status_block;
-        if ((VMI_FAILURE == vmi_read(vmi, &ctx, 0x10, &io_status_block, NULL)))
+        if ((VMI_FAILURE == vmi_read(vmi, &ctx, sizeof(struct IO_STATUS_BLOCK), &io_status_block, NULL)))
             goto err;
     }
 
@@ -314,65 +316,30 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
                 goto err;
             }
 
+            struct argument args[9] = { {0} };
+            const uint64_t BYTES_TO_READ = 0x4000UL;
+            struct _LARGE_INTEGER {
+              uint64_t QuadPart;
+            } byte_offset = { .QuadPart = injector->ntreadfile_info.bytes_read };
+            const struct IO_STATUS_BLOCK io_status_block = { 0 };
+            const uint8_t buffer[BYTES_TO_READ] = { 0 };
             uint64_t null64 = 0;
 
-            ctx.addr -= 0x10;
-            injector->ntreadfile_info.io_status_block = ctx.addr;
+            init_argument(0, &args[0], ARGUMENT_INT, sizeof(uint64_t), (void*)injector->handle);
+            init_argument(0, &args[1], ARGUMENT_INT, sizeof(uint64_t), (void*)null64);
+            init_argument(0, &args[2], ARGUMENT_INT, sizeof(uint64_t), (void*)null64);
+            init_argument(0, &args[3], ARGUMENT_INT, sizeof(uint64_t), (void*)null64);
+            init_argument(0, &args[4], ARGUMENT_STRUCT, sizeof(struct IO_STATUS_BLOCK), (void*)&io_status_block);
+            init_argument(0, &args[5], ARGUMENT_STRUCT, injector->ntreadfile_info.size, (void*)buffer);
+            init_argument(0, &args[6], ARGUMENT_INT, sizeof(uint64_t), (void*)injector->ntreadfile_info.size);
+            init_argument(0, &args[7], ARGUMENT_STRUCT, sizeof(byte_offset), (void*)&byte_offset);
+            init_argument(0, &args[8], ARGUMENT_INT, sizeof(uint64_t), (void*)null64);
 
-            ctx.addr -= injector->ntreadfile_info.size;
-            injector->ntreadfile_info.out = ctx.addr;
-            char buffer[injector->ntreadfile_info.size];
-            memset(buffer, 0, injector->ntreadfile_info.size);
-            if (VMI_FAILURE == vmi_write(vmi, &ctx, injector->ntreadfile_info.size, buffer, NULL))
-                goto err;
+            if ( !setup_stack_64(vmi, info, &ctx, args, 9) )
+              goto err;
 
-            //p9
-            ctx.addr -= 8;
-            if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &null64))
-                goto err;
-
-            //p8
-            ctx.addr -= 8;
-            if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &null64))
-                goto err;
-
-            //p7
-            ctx.addr -= 8;
-            if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &injector->ntreadfile_info.size))
-                goto err;
-
-            //p6
-            ctx.addr -= 8;
-            if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &injector->ntreadfile_info.out))
-                goto err;
-
-            //p5
-            ctx.addr -= 8;
-            if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &injector->ntreadfile_info.io_status_block))
-                goto err;
-
-            //p1
-            info->regs->rcx = injector->handle;
-            //p2
-            info->regs->rdx = 0;
-            //p3
-            info->regs->r8 = 0;
-            //p4
-            info->regs->r9 = 0;
-
-            // allocate 0x20 "homing space"
-            uint64_t home_space[4] = { 0 };
-            ctx.addr -= 0x20;
-            if (VMI_FAILURE == vmi_write(vmi, &ctx, 0x20, home_space, NULL))
-                goto err;
-
-            // save the return address
-            ctx.addr -= 0x8;
-            if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &info->regs->rip))
-                goto err;
-
-            // Grow the stack
-            info->regs->rsp = ctx.addr;
+            injector->ntreadfile_info.out = args[5].data_on_stack;
+            injector->ntreadfile_info.io_status_block = args[4].data_on_stack;
 
             info->regs->rip = f->readfile_va;
 
@@ -452,9 +419,6 @@ static event_response_t queryobject_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* i
         if ( 0 != type_file.compare(std::string((const char*)type_name->contents)) )
             goto handled;
 
-        injector->ntreadfile_info.size = 0x4000UL;
-        injector->ntreadfile_info.bytes_read = 0UL;
-
         {
             // Remove stack arguments and home space from previous injection
             info->regs->rsp = injector->saved_regs.rsp;
@@ -472,65 +436,29 @@ static event_response_t queryobject_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* i
                 goto err;
             }
 
+            struct argument args[9] = { {0} };
+            const uint64_t BYTES_TO_READ = 0x4000UL;
+            const struct IO_STATUS_BLOCK io_status_block = { 0 };
+            const uint8_t buffer[BYTES_TO_READ] = { 0 };
             uint64_t null64 = 0;
 
-            ctx.addr -= 0x10UL;
-            injector->ntreadfile_info.io_status_block = ctx.addr;
+            init_argument(0, &args[0], ARGUMENT_INT, sizeof(uint64_t), (void*)injector->handle);
+            init_argument(0, &args[1], ARGUMENT_INT, sizeof(uint64_t), (void*)null64);
+            init_argument(0, &args[2], ARGUMENT_INT, sizeof(uint64_t), (void*)null64);
+            init_argument(0, &args[3], ARGUMENT_INT, sizeof(uint64_t), (void*)null64);
+            init_argument(0, &args[4], ARGUMENT_STRUCT, sizeof(struct IO_STATUS_BLOCK), (void*)&io_status_block);
+            init_argument(0, &args[5], ARGUMENT_STRUCT, injector->ntreadfile_info.size, (void*)buffer);
+            init_argument(0, &args[6], ARGUMENT_INT, sizeof(uint64_t), (void*)injector->ntreadfile_info.size);
+            init_argument(0, &args[7], ARGUMENT_INT, sizeof(uint64_t), (void*)null64);
+            init_argument(0, &args[8], ARGUMENT_INT, sizeof(uint64_t), (void*)null64);
 
-            ctx.addr -= injector->ntreadfile_info.size;
-            injector->ntreadfile_info.out = ctx.addr;
-            char buffer[injector->ntreadfile_info.size];
-            memset(buffer, 0, injector->ntreadfile_info.size);
-            if (VMI_FAILURE == vmi_write(vmi, &ctx, injector->ntreadfile_info.size, buffer, NULL))
-                goto err;
+            if ( !setup_stack_64(vmi, info, &ctx, args, 9) )
+              goto err;
 
-            //p9
-            ctx.addr -= 8;
-            if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &null64))
-                goto err;
-
-            //p8
-            ctx.addr -= 8;
-            if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &null64))
-                goto err;
-
-            //p7
-            ctx.addr -= 8;
-            if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &injector->ntreadfile_info.size))
-                goto err;
-
-            //p6
-            ctx.addr -= 8;
-            if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &injector->ntreadfile_info.out))
-                goto err;
-
-            //p5
-            ctx.addr -= 8;
-            if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &injector->ntreadfile_info.io_status_block))
-                goto err;
-
-            //p1
-            info->regs->rcx = injector->handle;
-            //p2
-            info->regs->rdx = 0;
-            //p3
-            info->regs->r8 = 0;
-            //p4
-            info->regs->r9 = 0;
-
-            // allocate 0x20 "homing space"
-            uint64_t home_space[4] = { 0 };
-            ctx.addr -= 0x20;
-            if (VMI_FAILURE == vmi_write(vmi, &ctx, 0x20, home_space, NULL))
-                goto err;
-
-            // save the return address
-            ctx.addr -= 0x8;
-            if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &info->regs->rip))
-                goto err;
-
-            // Grow the stack
-            info->regs->rsp = ctx.addr;
+            injector->ntreadfile_info.size = BYTES_TO_READ;
+            injector->ntreadfile_info.bytes_read = 0UL;
+            injector->ntreadfile_info.out = args[5].data_on_stack;
+            injector->ntreadfile_info.io_status_block = args[4].data_on_stack;
         }
 
         info->regs->rip = f->readfile_va;
@@ -639,62 +567,23 @@ static event_response_t start_readfile(drakvuf_t drakvuf, drakvuf_trap_info_t* i
             goto err;
         }
 
-        uint64_t nul64 = 0;
+        struct argument args[5] = { {0} };
+        // Use some big predefined value to avoid injection ZwQueryObject twice
+        const uint64_t OBJECT_TYPE_INFO_SIZE = 0x100;
+        const uint64_t OBJECT_INFORMATION_CLASS = 2; // ObjectTypeInformation
+        const uint8_t object_type_info_buffer[OBJECT_TYPE_INFO_SIZE] = { 0 };
+        uint64_t null64 = 0;
 
-        // The string's length is undefined and could misalign stack which must be
-        // aligned on 16B boundary (see Microsoft x64 ABI).
-        ctx.addr &= ~0x1f;
+        init_argument(0, &args[0], ARGUMENT_INT, sizeof(uint64_t), (void*)handle);
+        init_argument(0, &args[1], ARGUMENT_INT, sizeof(uint64_t), (void*)OBJECT_INFORMATION_CLASS);
+        init_argument(0, &args[2], ARGUMENT_STRUCT, OBJECT_TYPE_INFO_SIZE, (void*)object_type_info_buffer);
+        init_argument(0, &args[3], ARGUMENT_INT, sizeof(uint64_t), (void*)OBJECT_TYPE_INFO_SIZE);
+        init_argument(0, &args[4], ARGUMENT_INT, sizeof(uint64_t), (void*)null64);
 
-        const size_t object_type_info_size = 0x100;
-        ctx.addr -= object_type_info_size;
-        auto out_addr = ctx.addr;
-        injector->ntqueryobject_info.out = out_addr;
-        if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &nul64))
-            goto err;
+        if ( !setup_stack_64(vmi, info, &ctx, args, 5) )
+          goto err;
 
-        ctx.addr -= 0x8;
-        auto out_size_addr = ctx.addr;
-        if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &nul64))
-            goto err;
-
-        //p5
-        ctx.addr -= 0x8;
-        if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &out_size_addr))
-            goto err;
-
-        //p1
-        info->regs->rcx = handle;
-        //p2
-        info->regs->rdx = 2; // OBJECT_INFORMATION_CLASS ObjectTypeInformation
-        //p3
-        info->regs->r8 = out_addr;
-        //p4
-        info->regs->r9 = object_type_info_size;
-
-        // allocate 0x20 "homing space"
-        ctx.addr -= 0x8;
-        if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &nul64))
-            goto err;
-
-        ctx.addr -= 0x8;
-        if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &nul64))
-            goto err;
-
-        ctx.addr -= 0x8;
-        if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &nul64))
-            goto err;
-
-        ctx.addr -= 0x8;
-        if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &nul64))
-            goto err;
-
-        // save the return address
-        ctx.addr -= 0x8;
-        if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &info->regs->rip))
-            goto err;
-
-        // Grow the stack
-        info->regs->rsp = ctx.addr;
+        injector->ntqueryobject_info.out = args[2].data_on_stack;
     }
 
     injector->bp = (drakvuf_trap_t*)g_malloc0(sizeof(drakvuf_trap_t));
