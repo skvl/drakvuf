@@ -209,13 +209,14 @@ struct injector
         struct
         {
             size_t bytes_read;
-            size_t size;
             addr_t out;
         } ntreadfile_info;
     };
 
     drakvuf_trap_t* bp;
 };
+
+const uint64_t BYTES_TO_READ = 0x4000;
 
 static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
 {
@@ -268,8 +269,8 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
         free(file);
 
         ctx.addr = injector->ntreadfile_info.out;
-        void* buffer = g_malloc0(injector->ntreadfile_info.size);
-        if ((VMI_FAILURE == vmi_read(vmi, &ctx, injector->ntreadfile_info.size, buffer, NULL)))
+        void* buffer = g_malloc0(BYTES_TO_READ);
+        if ((VMI_FAILURE == vmi_read(vmi, &ctx, BYTES_TO_READ, buffer, NULL)))
             goto err;
 
         if ( asprintf(&file, "%s/file.%06lu", f->dump_folder, idx) < 0 )
@@ -282,11 +283,11 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
             goto err;
         }
 
-        fwrite(buffer, 1, injector->ntreadfile_info.size, fp);
+        fwrite(buffer, 1, BYTES_TO_READ, fp);
         fclose(fp);
         free(file);
 
-        injector->ntreadfile_info.bytes_read += injector->ntreadfile_info.size;
+        injector->ntreadfile_info.bytes_read += BYTES_TO_READ;
 
         if (!info->regs->rax)
         {
@@ -306,11 +307,10 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
             ctx.addr -= 16;
             auto pio_status_block = ctx.addr;
 
-            ctx.addr -= injector->ntreadfile_info.size;
+            ctx.addr -= BYTES_TO_READ;
             injector->ntreadfile_info.out = ctx.addr;
-            char buffer[injector->ntreadfile_info.size];
-            memset(buffer, 0, injector->ntreadfile_info.size);
-            if (VMI_FAILURE == vmi_write(vmi, &ctx, injector->ntreadfile_info.size, buffer, NULL))
+            char buffer[BYTES_TO_READ] = { 0 };
+            if (VMI_FAILURE == vmi_write(vmi, &ctx, BYTES_TO_READ, buffer, NULL))
                 goto err;
 
             //p9
@@ -325,7 +325,7 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
 
             //p7
             ctx.addr -= 8;
-            if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &injector->ntreadfile_info.size))
+            if (VMI_FAILURE == vmi_write_64(vmi, &ctx, (uint64_t*)&BYTES_TO_READ))
                 goto err;
 
             //p6
@@ -439,7 +439,6 @@ static event_response_t queryobject_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* i
         if ( 0 != type_file.compare(std::string((const char*)type_name->contents)) )
             goto handled;
 
-        injector->ntreadfile_info.size = 0x4000UL;
         injector->ntreadfile_info.bytes_read = 0UL;
 
         {
@@ -464,11 +463,10 @@ static event_response_t queryobject_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* i
             ctx.addr -= 0x30UL;
             auto pio_status_block = ctx.addr;
 
-            ctx.addr -= injector->ntreadfile_info.size;
+            ctx.addr -= BYTES_TO_READ;
             injector->ntreadfile_info.out = ctx.addr;
-            char buffer[injector->ntreadfile_info.size];
-            memset(buffer, 0, injector->ntreadfile_info.size);
-            if (VMI_FAILURE == vmi_write(vmi, &ctx, injector->ntreadfile_info.size, buffer, NULL))
+            char buffer[BYTES_TO_READ] = { 0 };
+            if (VMI_FAILURE == vmi_write(vmi, &ctx, BYTES_TO_READ, buffer, NULL))
                 goto err;
 
             //p9
@@ -483,7 +481,7 @@ static event_response_t queryobject_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* i
 
             //p7
             ctx.addr -= 8;
-            if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &injector->ntreadfile_info.size))
+            if (VMI_FAILURE == vmi_write_64(vmi, &ctx, (uint64_t*)&BYTES_TO_READ))
                 goto err;
 
             //p6
