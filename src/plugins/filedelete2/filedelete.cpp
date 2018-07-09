@@ -322,14 +322,27 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
 
             uint64_t null64 = 0;
 
+            ctx.addr -= 8;
+            ctx.addr &= ~0x1f; // Align stack
+            addr_t byte_offset = ctx.addr;
+            if (VMI_FAILURE == vmi_write(vmi, &ctx, 8, &injector->ntreadfile_info.bytes_read, NULL))
+              goto err;
+
             ctx.addr -= sizeof(struct IO_STATUS_BLOCK);
+            ctx.addr &= ~0x1f; // Align stack
             injector->ntreadfile_info.io_status_block = ctx.addr;
 
             ctx.addr -= BYTES_TO_READ;
+            ctx.addr &= ~0x1f; // Align stack
             injector->ntreadfile_info.out = ctx.addr;
             char buffer[BYTES_TO_READ] = { 0 };
             if (VMI_FAILURE == vmi_write(vmi, &ctx, BYTES_TO_READ, buffer, NULL))
                 goto err;
+
+            // Dummy argument to align stack
+            ctx.addr -= 8;
+            if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &null64))
+              goto err;
 
             //p9
             ctx.addr -= 8;
@@ -338,7 +351,7 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
 
             //p8
             ctx.addr -= 8;
-            if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &null64))
+            if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &byte_offset))
                 goto err;
 
             //p7
@@ -479,13 +492,20 @@ static event_response_t queryobject_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* i
             uint64_t null64 = 0;
 
             ctx.addr -= sizeof(struct IO_STATUS_BLOCK);
+            ctx.addr &= ~0x1f; // Align stack
             injector->ntreadfile_info.io_status_block = ctx.addr;
 
             ctx.addr -= BYTES_TO_READ;
+            ctx.addr &= ~0x1f; // Align stack
             injector->ntreadfile_info.out = ctx.addr;
             char buffer[BYTES_TO_READ] = { 0 };
             if (VMI_FAILURE == vmi_write(vmi, &ctx, BYTES_TO_READ, buffer, NULL))
                 goto err;
+
+            // Dummy argument to align stack
+            ctx.addr -= 8;
+            if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &null64))
+              goto err;
 
             //p9
             ctx.addr -= 8;
@@ -659,6 +679,11 @@ static event_response_t start_readfile(drakvuf_t drakvuf, drakvuf_trap_info_t* i
         auto out_size_addr = ctx.addr;
         if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &nul64))
             goto err;
+
+        // Dummy argument to align stack
+        ctx.addr -= 8;
+        if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &nul64))
+          goto err;
 
         //p5
         ctx.addr -= 0x8;
