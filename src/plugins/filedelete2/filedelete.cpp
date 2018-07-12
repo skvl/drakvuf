@@ -221,8 +221,14 @@ const uint64_t BYTES_TO_READ = 0x4000;
 
 struct IO_STATUS_BLOCK
 {
-  uint64_t dummy;
-  uint64_t info;
+    uint64_t dummy;
+    uint64_t info;
+} __attribute__((packed));
+
+struct FILE_FS_DEVICE_INFORMATION
+{
+    uint32_t device_type;
+    uint32_t characteristics;
 } __attribute__((packed));
 
 static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
@@ -326,7 +332,7 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
             ctx.addr &= ~0x1f; // Align stack
             addr_t byte_offset = ctx.addr;
             if (VMI_FAILURE == vmi_write(vmi, &ctx, 8, &injector->ntreadfile_info.bytes_read, NULL))
-              goto err;
+                goto err;
 
             ctx.addr -= sizeof(struct IO_STATUS_BLOCK);
             ctx.addr &= ~0x1f; // Align stack
@@ -342,7 +348,7 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
             // Dummy argument to align stack
             ctx.addr -= 8;
             if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &null64))
-              goto err;
+                goto err;
 
             //p9
             ctx.addr -= 8;
@@ -456,18 +462,24 @@ static event_response_t queryobject_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* i
         goto done;
 
     if (info->regs->rax)
-        PRINT_DEBUG("[FILEDELETE2] [QueryObject] Failed with status 0x%lx\n", info->regs->rax);
+        goto handled;
     else
     {
-        unicode_string_t* type_name = drakvuf_read_unicode(drakvuf, info, injector->ntqueryobject_info.out);
-        if (!type_name)
+        access_context_t ctx =
         {
-            PRINT_DEBUG("[FILEDELETE2] [QueryObject] Failed to read object type\n");
+            .translate_mechanism = VMI_TM_PROCESS_DTB,
+            .dtb = info->regs->cr3,
+            .addr = injector->ntqueryobject_info.out,
+        };
+
+        struct FILE_FS_DEVICE_INFORMATION dev_info = { 0 };
+        if ((VMI_FAILURE == vmi_read(vmi, &ctx, sizeof(struct FILE_FS_DEVICE_INFORMATION), &dev_info, NULL)))
+        {
+            PRINT_DEBUG("[FILEDELETE2] [QueryObject] Failed to read FsDeviceInformation\n");
             goto err;
         }
 
-        std::string type_file = "File";
-        if ( 0 != type_file.compare(std::string((const char*)type_name->contents)) )
+        if (7 != dev_info.device_type) // FILE_DEVICE_DISK
             goto handled;
 
         injector->ntreadfile_info.bytes_read = 0UL;
@@ -476,12 +488,7 @@ static event_response_t queryobject_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* i
             // Remove stack arguments and home space from previous injection
             info->regs->rsp = injector->saved_regs.rsp;
 
-            access_context_t ctx =
-            {
-                .translate_mechanism = VMI_TM_PROCESS_DTB,
-                .dtb = info->regs->cr3,
-                .addr = info->regs->rsp,
-            };
+            ctx.addr = info->regs->rsp;
 
             if (injector->is32bit)
             {
@@ -495,7 +502,7 @@ static event_response_t queryobject_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* i
             ctx.addr &= ~0x1f; // Align stack
             addr_t byte_offset = ctx.addr;
             if (VMI_FAILURE == vmi_write(vmi, &ctx, 8, &null64, NULL))
-              goto err;
+                goto err;
 
             ctx.addr -= sizeof(struct IO_STATUS_BLOCK);
             ctx.addr &= ~0x1f; // Align stack
@@ -511,7 +518,7 @@ static event_response_t queryobject_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* i
             // Dummy argument to align stack
             ctx.addr -= 8;
             if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &null64))
-              goto err;
+                goto err;
 
             //p9
             ctx.addr -= 8;
@@ -674,36 +681,37 @@ static event_response_t start_readfile(drakvuf_t drakvuf, drakvuf_trap_info_t* i
         // aligned on 16B boundary (see Microsoft x64 ABI).
         ctx.addr &= ~0x1f;
 
-        const size_t object_type_info_size = 0x100;
-        ctx.addr -= object_type_info_size;
+        ctx.addr -= sizeof(struct IO_STATUS_BLOCK);
+        ctx.addr &= ~0x1f; // Align stack
+        auto io_status_block = ctx.addr;
+
+        const size_t out_size = sizeof(struct FILE_FS_DEVICE_INFORMATION);
+        ctx.addr -= out_size;
+        ctx.addr &= ~0x1f; // Align stack
         auto out_addr = ctx.addr;
         injector->ntqueryobject_info.out = out_addr;
-        if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &nul64))
-            goto err;
-
-        ctx.addr -= 0x8;
-        auto out_size_addr = ctx.addr;
         if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &nul64))
             goto err;
 
         // Dummy argument to align stack
         ctx.addr -= 8;
         if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &nul64))
-          goto err;
+            goto err;
 
         //p5
         ctx.addr -= 0x8;
-        if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &out_size_addr))
+        uint64_t info_class = 4; // FileFsDeviceInformation
+        if (VMI_FAILURE == vmi_write_64(vmi, &ctx, &info_class))
             goto err;
 
         //p1
         info->regs->rcx = handle;
         //p2
-        info->regs->rdx = 2; // OBJECT_INFORMATION_CLASS ObjectTypeInformation
+        info->regs->rdx = io_status_block;
         //p3
         info->regs->r8 = out_addr;
         //p4
-        info->regs->r9 = object_type_info_size;
+        info->regs->r9 = out_size;
 
         // allocate 0x20 "homing space"
         ctx.addr -= 0x8;
@@ -987,7 +995,7 @@ filedelete2::filedelete2(drakvuf_t drakvuf, const void* config, output_format_t 
     this->format = output;
 
     const char* lib = "ntoskrnl.exe";
-    const char* queryobject_name = "ZwQueryObject";
+    const char* queryobject_name = "ZwQueryVolumeInformationFile";
     addr_t rva = 0;
 
     if ( !drakvuf_get_function_rva( c->rekall_profile, queryobject_name, &rva) )
