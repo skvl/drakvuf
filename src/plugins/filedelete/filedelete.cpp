@@ -561,19 +561,21 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
             struct _LARGE_INTEGER byte_offset = { .QuadPart = injector->ntreadfile_info.bytes_read };
             const struct IO_STATUS_BLOCK io_status_block = { 0 };
             const uint8_t buffer[BYTES_TO_READ] = { 0 };
-            uint64_t null64 = 0;
+            uint64_t null = 0;
+            const size_t int_size = injector->is32bit ? sizeof (uint32_t) : sizeof (uint64_t);
 
-            init_argument(&args[0], ARGUMENT_INT, sizeof(uint64_t), (void*)injector->handle);
-            init_argument(&args[1], ARGUMENT_INT, sizeof(uint64_t), (void*)null64);
-            init_argument(&args[2], ARGUMENT_INT, sizeof(uint64_t), (void*)null64);
-            init_argument(&args[3], ARGUMENT_INT, sizeof(uint64_t), (void*)null64);
+            init_argument(&args[0], ARGUMENT_INT, int_size, (void*)injector->handle);
+            init_argument(&args[1], ARGUMENT_INT, int_size, (void*)null);
+            init_argument(&args[2], ARGUMENT_INT, int_size, (void*)null);
+            init_argument(&args[3], ARGUMENT_INT, int_size, (void*)null);
             init_argument(&args[4], ARGUMENT_STRUCT, sizeof(struct IO_STATUS_BLOCK), (void*)&io_status_block);
             init_argument(&args[5], ARGUMENT_STRUCT, BYTES_TO_READ, (void*)buffer);
-            init_argument(&args[6], ARGUMENT_INT, sizeof(uint64_t), (void*)BYTES_TO_READ);
+            init_argument(&args[6], ARGUMENT_INT, int_size, (void*)BYTES_TO_READ);
             init_argument(&args[7], ARGUMENT_STRUCT, sizeof(byte_offset), (void*)&byte_offset);
-            init_argument(&args[8], ARGUMENT_INT, sizeof(uint64_t), (void*)null64);
+            init_argument(&args[8], ARGUMENT_INT, int_size, (void*)null);
 
-            if ( !setup_stack_64(vmi, info, &ctx, args, 9) )
+            bool stack_ok = injector->is32bit ? setup_stack_32(vmi, info, &ctx, args, 5) : setup_stack_64(vmi, info, &ctx, args, 5);
+            if ( stack_ok )
                 goto err;
 
             injector->ntreadfile_info.io_status_block = args[4].data_on_stack;
@@ -600,13 +602,15 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
         }
 
         struct argument args[3] = { {0} };
-        uint64_t null64 = 0;
+        uint64_t null = 0;
+        const size_t int_size = injector->is32bit ? sizeof (uint32_t) : sizeof (uint64_t);
 
-        init_argument(&args[0], ARGUMENT_INT, sizeof(uint64_t), (void*)injector->handle);
-        init_argument(&args[1], ARGUMENT_INT, sizeof(uint64_t), (void*)null64);
-        init_argument(&args[2], ARGUMENT_INT, sizeof(uint64_t), (void*)null64);
+        init_argument(&args[0], ARGUMENT_INT, int_size, (void*)injector->handle);
+        init_argument(&args[1], ARGUMENT_INT, int_size, (void*)null);
+        init_argument(&args[2], ARGUMENT_INT, int_size, (void*)null);
 
-        if ( !setup_stack_64(vmi, info, &ctx, args, 3) )
+        bool stack_ok = injector->is32bit ? setup_stack_32(vmi, info, &ctx, args, 5) : setup_stack_64(vmi, info, &ctx, args, 5);
+        if ( stack_ok )
             goto err;
 
         info->regs->rip = f->waitobject_va;
@@ -710,19 +714,21 @@ static event_response_t queryobject_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* i
             struct _LARGE_INTEGER byte_offset = { .QuadPart = 0 };
             const struct IO_STATUS_BLOCK io_status_block = { 0 };
             const uint8_t buffer[BYTES_TO_READ] = { 0 };
-            uint64_t null64 = 0;
+            uint64_t null = 0;
+            const size_t int_size = injector->is32bit ? sizeof (uint32_t) : sizeof (uint64_t);
 
-            init_argument(&args[0], ARGUMENT_INT, sizeof(uint64_t), (void*)injector->handle);
-            init_argument(&args[1], ARGUMENT_INT, sizeof(uint64_t), (void*)null64);
-            init_argument(&args[2], ARGUMENT_INT, sizeof(uint64_t), (void*)null64);
-            init_argument(&args[3], ARGUMENT_INT, sizeof(uint64_t), (void*)null64);
+            init_argument(&args[0], ARGUMENT_INT, int_size, (void*)injector->handle);
+            init_argument(&args[1], ARGUMENT_INT, int_size, (void*)null);
+            init_argument(&args[2], ARGUMENT_INT, int_size, (void*)null);
+            init_argument(&args[3], ARGUMENT_INT, int_size, (void*)null);
             init_argument(&args[4], ARGUMENT_STRUCT, sizeof(struct IO_STATUS_BLOCK), (void*)&io_status_block);
             init_argument(&args[5], ARGUMENT_STRUCT, BYTES_TO_READ, (void*)buffer);
-            init_argument(&args[6], ARGUMENT_INT, sizeof(uint64_t), (void*)BYTES_TO_READ);
+            init_argument(&args[6], ARGUMENT_INT, int_size, (void*)BYTES_TO_READ);
             init_argument(&args[7], ARGUMENT_STRUCT, sizeof(byte_offset), (void*)&byte_offset);
-            init_argument(&args[8], ARGUMENT_INT, sizeof(uint64_t), (void*)null64);
+            init_argument(&args[8], ARGUMENT_INT, int_size, (void*)null);
 
-            if ( !setup_stack_64(vmi, info, &ctx, args, 9) )
+            bool stack_ok = injector->is32bit ? setup_stack_32(vmi, info, &ctx, args, 5) : setup_stack_64(vmi, info, &ctx, args, 5);
+            if ( stack_ok )
                 goto err;
 
             injector->ntreadfile_info.io_status_block = args[4].data_on_stack;
@@ -831,23 +837,19 @@ static event_response_t start_readfile(drakvuf_t drakvuf, drakvuf_trap_info_t* i
             .addr = info->regs->rsp,
         };
 
-        if (injector->is32bit)
-        {
-            PRINT_DEBUG("[FILEDELETE2] 32bit VMs not supported yet\n");
-            goto err;
-        }
-
         struct argument args[5] = { {0} };
         const struct IO_STATUS_BLOCK io_status_block = { 0 };
         struct FILE_FS_DEVICE_INFORMATION dev_info = { 0 };
+        const size_t int_size = injector->is32bit ? sizeof (uint32_t) : sizeof (uint64_t);
 
-        init_argument(&args[0], ARGUMENT_INT, sizeof(uint64_t), (void*)handle);
+        init_argument(&args[0], ARGUMENT_INT, int_size, (void*)handle);
         init_argument(&args[1], ARGUMENT_STRUCT, sizeof(struct IO_STATUS_BLOCK), (void*)&io_status_block);
         init_argument(&args[2], ARGUMENT_STRUCT, sizeof(struct FILE_FS_DEVICE_INFORMATION), (void*)&dev_info);
-        init_argument(&args[3], ARGUMENT_INT, sizeof(uint64_t), (void*)sizeof(struct FILE_FS_DEVICE_INFORMATION));
-        init_argument(&args[4], ARGUMENT_INT, sizeof(uint64_t), (void*)4); // FileFsDeviceInformation
+        init_argument(&args[3], ARGUMENT_INT, int_size, (void*)sizeof(struct FILE_FS_DEVICE_INFORMATION));
+        init_argument(&args[4], ARGUMENT_INT, int_size, (void*)4); // FileFsDeviceInformation
 
-        if ( !setup_stack_64(vmi, info, &ctx, args, 5) )
+        bool stack_ok = injector->is32bit ? setup_stack_32(vmi, info, &ctx, args, 5) : setup_stack_64(vmi, info, &ctx, args, 5);
+        if ( stack_ok )
             goto err;
 
         injector->ntqueryobject_info.out = args[2].data_on_stack;
