@@ -568,7 +568,7 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
             init_argument(&args[7], ARGUMENT_STRUCT, sizeof(byte_offset), (void*)&byte_offset);
             init_argument(&args[8], ARGUMENT_INT, int_size, (void*)null);
 
-            bool stack_ok = injector->is32bit ? setup_stack_32(vmi, info, &ctx, args, 5) : setup_stack_64(vmi, info, &ctx, args, 5);
+            bool stack_ok = injector->is32bit ? setup_stack_32(vmi, info, &ctx, args, 9) : setup_stack_64(vmi, info, &ctx, args, 9);
             if ( !stack_ok )
                 goto err;
 
@@ -597,7 +597,7 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
         init_argument(&args[1], ARGUMENT_INT, int_size, (void*)null);
         init_argument(&args[2], ARGUMENT_INT, int_size, (void*)null);
 
-        bool stack_ok = injector->is32bit ? setup_stack_32(vmi, info, &ctx, args, 5) : setup_stack_64(vmi, info, &ctx, args, 5);
+        bool stack_ok = injector->is32bit ? setup_stack_32(vmi, info, &ctx, args, 3) : setup_stack_64(vmi, info, &ctx, args, 3);
         if ( !stack_ok )
             goto err;
 
@@ -608,12 +608,11 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
 
         response = VMI_EVENT_RESPONSE_SET_REGISTERS;
 
-        PRINT_DEBUG("[FILEDELETE2] [ReadFile] Wait for pending read of file '%s'\n", f->files[std::make_pair(info->proc_data.pid, injector->handle)].c_str());
-
         goto done;
     }
     else
-        PRINT_DEBUG("[FILEDELETE2] [ReadFile] Failed to read %s with status 0x%lx.\n", f->files[std::make_pair(info->proc_data.pid, injector->handle)].c_str(), info->regs->rax);
+        PRINT_DEBUG("[FILEDELETE2] [ReadFile] Failed to read %s with status 0x%lx and IO_STATUS_BLOC 0x%lx.\n",
+                    f->files[std::make_pair(info->proc_data.pid, injector->handle)].c_str(), info->regs->rax, io_status_block.status);
 
     f->closing_handles[std::make_pair(info->regs->cr3, thread_id)] = true;
     f->files.erase(std::make_pair(info->proc_data.pid, injector->handle));
@@ -709,7 +708,7 @@ static event_response_t queryobject_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* i
             init_argument(&args[7], ARGUMENT_STRUCT, sizeof(byte_offset), (void*)&byte_offset);
             init_argument(&args[8], ARGUMENT_INT, int_size, (void*)null);
 
-            bool stack_ok = injector->is32bit ? setup_stack_32(vmi, info, &ctx, args, 5) : setup_stack_64(vmi, info, &ctx, args, 5);
+            bool stack_ok = injector->is32bit ? setup_stack_32(vmi, info, &ctx, args, 9) : setup_stack_64(vmi, info, &ctx, args, 9);
             if ( !stack_ok )
                 goto err;
 
