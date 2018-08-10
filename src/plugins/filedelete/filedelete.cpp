@@ -517,6 +517,8 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
         ctx.addr = injector->ntreadfile_info.io_status_block;
         if ((VMI_FAILURE == vmi_read(vmi, &ctx, sizeof(struct IO_STATUS_BLOCK), &io_status_block, NULL)))
             goto err;
+        // NTSTATUS is 32bit field
+        io_status_block.status &= 0xffffffff;
     }
 
     if ( !info->regs->rax && !io_status_block.status )
