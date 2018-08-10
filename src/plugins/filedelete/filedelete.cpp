@@ -171,7 +171,7 @@ struct wrapper_t
     drakvuf_trap_t* bp;
 };
 
-static const uint64_t BYTES_TO_READ = 0x4000;
+static const uint64_t BYTES_TO_READ = 0x1000;
 
 struct IO_STATUS_BLOCK
 {
