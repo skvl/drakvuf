@@ -173,10 +173,19 @@ struct wrapper_t
 
 static const uint64_t BYTES_TO_READ = 0x1000;
 
-struct IO_STATUS_BLOCK
+union IO_STATUS_BLOCK
 {
-    uint64_t status;
-    uint64_t info;
+    struct
+    {
+        uint32_t status;
+        uint32_t info;
+    } x86;
+
+    struct
+    {
+        uint64_t status;
+        uint64_t info;
+    } amd64;
 } __attribute__((packed));
 
 struct _LARGE_INTEGER
@@ -487,6 +496,9 @@ static bool save_file_chunk(filedelete* f, int file_sequence_number, void* buffe
     return success;
 }
 
+constexpr static uint32_t STATUS_SUCCESS = 0;
+constexpr static uint32_t STATUS_PENDING = 0x103;
+
 static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
 {
     wrapper_t* injector = (wrapper_t*)info->trap->data;
@@ -501,8 +513,11 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
         .dtb = info->regs->cr3,
     };
 
-    struct IO_STATUS_BLOCK io_status_block = { 0 };
+    union IO_STATUS_BLOCK io_status_block = { { 0 } };
 
+    const uint32_t status = info->regs->rax;
+    uint32_t isb_status = 0; // `isb` is `IO_STATUS_BLOCK`
+    size_t isb_size = 0;
     vmi_instance_t vmi = drakvuf_lock_and_get_vmi(drakvuf);
 
     if (info->regs->cr3 != injector->target_cr3)
@@ -512,16 +527,22 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
             !injector->target_thread_id || thread_id != injector->target_thread_id )
         goto done;
 
-    if ( !info->regs->rax )
+    ctx.addr = injector->ntreadfile_info.io_status_block;
+    if ((VMI_FAILURE == vmi_read(vmi, &ctx, sizeof(union IO_STATUS_BLOCK), &io_status_block, NULL)))
+        goto err;
+
+    if (injector->is32bit)
     {
-        ctx.addr = injector->ntreadfile_info.io_status_block;
-        if ((VMI_FAILURE == vmi_read(vmi, &ctx, sizeof(struct IO_STATUS_BLOCK), &io_status_block, NULL)))
-            goto err;
-        // NTSTATUS is 32bit field
-        io_status_block.status &= 0xffffffff;
+        isb_status = io_status_block.x86.status;
+        isb_size = io_status_block.x86.info;
+    }
+    else
+    {
+        isb_status = io_status_block.amd64.status;
+        isb_size = io_status_block.amd64.info;
     }
 
-    if ( !info->regs->rax && !io_status_block.status )
+    if ( STATUS_SUCCESS == status && isb_size )
     {
         if (injector->curr_sequence_number < 0) injector->curr_sequence_number = ++f->sequence_number;
         const int curr_sequence_number = injector->curr_sequence_number;
@@ -529,24 +550,23 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
         auto filename = f->files[std::make_pair(info->proc_data.pid, injector->handle)];
         save_file_metadata(f, info, curr_sequence_number, 0, filename.c_str());
 
-        size_t size = io_status_block.info;
-        void* buffer = g_malloc0(size);
+        void* buffer = g_malloc0(isb_size);
 
         ctx.addr = injector->ntreadfile_info.out;
-        if (VMI_FAILURE == vmi_read(vmi, &ctx, size, buffer, NULL))
+        if (VMI_FAILURE == vmi_read(vmi, &ctx, isb_size, buffer, NULL))
         {
             g_free(buffer);
             goto err;
         }
 
-        bool success = save_file_chunk(f, curr_sequence_number, buffer, size);
+        bool success = save_file_chunk(f, curr_sequence_number, buffer, isb_size);
         g_free(buffer);
         if (!success)
             goto err;
 
-        injector->ntreadfile_info.bytes_read += size;
+        injector->ntreadfile_info.bytes_read += isb_size;
 
-        if (BYTES_TO_READ == size)
+        if (BYTES_TO_READ == isb_size)
         {
             // Remove stack arguments and home space from previous injection
             info->regs->rsp = injector->saved_regs.rsp;
@@ -555,7 +575,7 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
 
             struct argument args[9] = { {0} };
             struct _LARGE_INTEGER byte_offset = { .QuadPart = injector->ntreadfile_info.bytes_read };
-            const struct IO_STATUS_BLOCK io_status_block = { 0 };
+            const union IO_STATUS_BLOCK io_status_block = { { 0 } };
             const uint8_t buffer[BYTES_TO_READ] = { 0 };
             uint64_t null = 0;
             const size_t int_size = injector->is32bit ? sizeof (uint32_t) : sizeof (uint64_t);
@@ -564,7 +584,7 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
             init_argument(&args[1], ARGUMENT_INT, int_size, (void*)null);
             init_argument(&args[2], ARGUMENT_INT, int_size, (void*)null);
             init_argument(&args[3], ARGUMENT_INT, int_size, (void*)null);
-            init_argument(&args[4], ARGUMENT_STRUCT, sizeof(struct IO_STATUS_BLOCK), (void*)&io_status_block);
+            init_argument(&args[4], ARGUMENT_STRUCT, sizeof(union IO_STATUS_BLOCK), (void*)&io_status_block);
             init_argument(&args[5], ARGUMENT_STRUCT, BYTES_TO_READ, (void*)buffer);
             init_argument(&args[6], ARGUMENT_INT, int_size, (void*)BYTES_TO_READ);
             init_argument(&args[7], ARGUMENT_STRUCT, sizeof(byte_offset), (void*)&byte_offset);
@@ -584,7 +604,7 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
             goto done;
         }
     }
-    else if (0x103 == info->regs->rax) // STATUS_PENDING
+    else if (STATUS_PENDING == status) // STATUS_PENDING
     {
         // Preserve "local" variables from previous ReadFile injection
         // info->regs->rsp = injector->saved_regs.rsp;
@@ -613,8 +633,8 @@ static event_response_t readfile_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info
         goto done;
     }
     else
-        PRINT_DEBUG("[FILEDELETE2] [ReadFile] Failed to read %s with status 0x%lx and IO_STATUS_BLOC 0x%lx.\n",
-                    f->files[std::make_pair(info->proc_data.pid, injector->handle)].c_str(), info->regs->rax, io_status_block.status);
+        PRINT_DEBUG("[FILEDELETE2] [ReadFile] Failed to read %s with status 0x%lx and IO_STATUS_BLOCK = { Status 0x%x; Size 0x%lx} .\n",
+                    f->files[std::make_pair(info->proc_data.pid, injector->handle)].c_str(), info->regs->rax, isb_status, isb_size);
 
     f->closing_handles[std::make_pair(info->regs->cr3, thread_id)] = true;
     f->files.erase(std::make_pair(info->proc_data.pid, injector->handle));
@@ -695,7 +715,7 @@ static event_response_t queryobject_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* i
 
             struct argument args[9] = { {0} };
             struct _LARGE_INTEGER byte_offset = { .QuadPart = 0 };
-            const struct IO_STATUS_BLOCK io_status_block = { 0 };
+            const union IO_STATUS_BLOCK io_status_block = { { 0 } };
             const uint8_t buffer[BYTES_TO_READ] = { 0 };
             uint64_t null = 0;
             const size_t int_size = injector->is32bit ? sizeof (uint32_t) : sizeof (uint64_t);
@@ -704,7 +724,7 @@ static event_response_t queryobject_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* i
             init_argument(&args[1], ARGUMENT_INT, int_size, (void*)null);
             init_argument(&args[2], ARGUMENT_INT, int_size, (void*)null);
             init_argument(&args[3], ARGUMENT_INT, int_size, (void*)null);
-            init_argument(&args[4], ARGUMENT_STRUCT, sizeof(struct IO_STATUS_BLOCK), (void*)&io_status_block);
+            init_argument(&args[4], ARGUMENT_STRUCT, sizeof(union IO_STATUS_BLOCK), (void*)&io_status_block);
             init_argument(&args[5], ARGUMENT_STRUCT, BYTES_TO_READ, (void*)buffer);
             init_argument(&args[6], ARGUMENT_INT, int_size, (void*)BYTES_TO_READ);
             init_argument(&args[7], ARGUMENT_STRUCT, sizeof(byte_offset), (void*)&byte_offset);
@@ -821,12 +841,12 @@ static event_response_t start_readfile(drakvuf_t drakvuf, drakvuf_trap_info_t* i
         };
 
         struct argument args[5] = { {0} };
-        const struct IO_STATUS_BLOCK io_status_block = { 0 };
+        const union IO_STATUS_BLOCK io_status_block = { { 0 } };
         struct FILE_FS_DEVICE_INFORMATION dev_info = { 0 };
         const size_t int_size = injector->is32bit ? sizeof (uint32_t) : sizeof (uint64_t);
 
         init_argument(&args[0], ARGUMENT_INT, int_size, (void*)handle);
-        init_argument(&args[1], ARGUMENT_STRUCT, sizeof(struct IO_STATUS_BLOCK), (void*)&io_status_block);
+        init_argument(&args[1], ARGUMENT_STRUCT, sizeof(union IO_STATUS_BLOCK), (void*)&io_status_block);
         init_argument(&args[2], ARGUMENT_STRUCT, sizeof(struct FILE_FS_DEVICE_INFORMATION), (void*)&dev_info);
         init_argument(&args[3], ARGUMENT_INT, int_size, (void*)sizeof(struct FILE_FS_DEVICE_INFORMATION));
         init_argument(&args[4], ARGUMENT_INT, int_size, (void*)4); // FileFsDeviceInformation
