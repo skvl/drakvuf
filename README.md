@@ -40,3 +40,4 @@ More information can be found on the project website: https://drakvuf.com
   <img alt="Coverity Scan Build Status"
        src="https://scan.coverity.com/projects/3238/badge.svg"/>
 </a>
+[![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=skvl-drakvuf&metric=alert_status)](https://sonarcloud.io/dashboard?id=drakvuf)
