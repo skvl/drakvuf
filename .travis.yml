@@ -9,7 +9,7 @@ env:
     global:
         # The next declaration is the encrypted COVERITY_SCAN_TOKEN, created
         #   via the "travis encrypt" command using the project repo's public key
-        - secure: "ZkXc5huudqMN0PXeloNfnuwaq4PQ6BDmU1Ov/ONDOtnwxkm4hxHrbbPwZ9O7/DprAor9p7X7jhx6sf3fsMB+ib0ARffQPB0JQNPPEWjbgUhTLL//y0W64efuwSrRLfaHXbcm6OJT1pjeyXWOKOMPrM7GBOnnRRscpDNtjqriPAs="
+        - secure: "eVFtrnzan3Yh3zWUEdcg32WNybbFwKQ//CaFh34K1CuhrtsQLGPDxaQTgox2w7u3EZ6cklZk8g0N/fYBGlqUq/HtHrMJjaGTriZmgwud788y0emrCbNEnA6/Gg81sYTVDpL8GFmzeX5mxkmqGoqoEpshuv/ukrPKtl85q9+mIV0Rfkl55vy5o/b+gX9pYYMJJ6ZO7jkxITeJZzkKnBUIcsqLRb7wvtIyaDMsur5nZoa71VTpqgUxNRGRepi3tpLymJvlzDAQ7lmWAw4guWpEW9A0LzWFPF8Yokiq6et8ZYZ3zg/Y+VZDB2PB8Hiqdiz6ufUeSofe1Q3cwdN8ymFv13lZO9K/SsiATV1HBCTLhdxc7vsA+HJSbF5pryUQ3nfL+zNAHY+aBhhiD2M+6V/tbyd9pAjWlOdpiEeJifdetFqceg+NK8qClyLPP6rsBagjqkor+xFrAb7roYdBFn94yJKuFG/GTp5ZSmtMxEN4jQVauWGd8m1eVFPqJsuUSObDun9yP5/2KLzS5Kip0J7xlUFR1XM6aNhjLZpha5bCY6nujYIgo7RICtSiHxbTTZKG4ULWJpnuCoZOAxXsASIirv6HORPJlcvzhKbMwPW53Y0MpSz7xSW7okYys5qcBNBR91EGiLuE6rHRzJJV0bWla1MV+LR3lAU2uH++0Ttx1a0="
 
 matrix:
     include:
@@ -108,12 +108,12 @@ matrix:
                 - libaio-dev
         coverity_scan:
             project:
-                name: "tklengyel/drakvuf"
+                name: "skvl/drakvuf"
                 description: "Build submitted via Travis CI"
-            notification_email: tamas@tklengyel.com
+            notification_email: valor@list.ru
             build_command_prepend: "./autogen.sh; ./configure --enable-debug; make clean"
             build_command:   "make"
-            branch_pattern: master
+            branch_pattern: coverity_scan
       before_install:
         - dpkg -x test-packages/xentools_4.7-drakvuf1-1_amd64.deb .
         - export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$PWD/usr/local/lib
